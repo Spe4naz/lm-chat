@@ -18,7 +18,9 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          # Keep CI aligned with the toolchain used to format and test the app.
+          # Newer stable releases flag package:flutter/material.dart as deprecated.
+          flutter-version: "3.47.2"
           cache: true
 
       - name: Install dependencies
