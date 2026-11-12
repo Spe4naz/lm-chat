@@ -1,0 +1,40 @@
+[Unit]
+Description=LM Studio GPU offload bridge
+Documentation=https://github.com/lmstudio-ai/docs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Замените __USER__ на пользователя, который запускает LM Studio.
+# Шаблон намеренно не содержит рабочего имени пользователя и токена.
+User=__USER__
+ExecStart=/usr/bin/python3 /opt/lm-gpu-bridge/lms_gpu_bridge.py
+Environment=LMS_BIN=%h/.lmstudio/bin/lms
+Environment=BRIDGE_HOST=0.0.0.0
+Environment=BRIDGE_PORT=1235
+# Если LM Studio запущен на другом компьютере, раскомментируйте и задайте адрес:
+# Environment=LMS_HOST=192.168.1.50:1234
+# Сколько хранить готовые задания чата (секунды) и сколько заданий держать:
+# Environment=BRIDGE_JOB_TTL=3600
+# Environment=BRIDGE_MAX_JOBS=8
+
+# Секреты не храните в этом файле. Создайте /etc/lm-gpu-bridge.env:
+#   BRIDGE_TOKEN=<длинный случайный токен>
+#   LMS_API_KEY=<токен LM Studio, если включена авторизация>
+#   sudo chmod 600 /etc/lm-gpu-bridge.env
+EnvironmentFile=-/etc/lm-gpu-bridge.env
+
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

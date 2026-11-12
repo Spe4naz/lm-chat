@@ -1,0 +1,1346 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
+String newId() =>
+    '${DateTime.now().microsecondsSinceEpoch}-${Random().nextInt(0x7fffffff)}';
+
+/// Short chat title from the first user message.
+///
+/// Truncates by runes, not UTF-16 code units, so an emoji is never cut in
+/// half. Grapheme clusters (flags, ZWJ sequences) may still be split, which is
+/// acceptable for a title.
+enum AppThemeMode { system, light, dark }
+
+/// Vertical rhythm of the interface. Compact saves space on laptops and small
+/// windows; normal keeps the roomier touch-friendly spacing.
+enum UiDensity { normal, compact }
+
+enum AppLanguage { system, ru, en }
+
+enum AppFontFamily {
+  system,
+  inter,
+  manrope,
+  custom;
+
+  String? get family => switch (this) {
+    AppFontFamily.system => null,
+    AppFontFamily.inter => 'Inter',
+    AppFontFamily.manrope => 'Manrope',
+    AppFontFamily.custom => null,
+  };
+}
+
+/// How the model is asked to format its answer.
+enum ResponseFormatMode { text, json, jsonSchema, grammar }
+
+String titleFromPrompt(String text, {int maxLength = 48}) {
+  final runes = text.runes.toList(growable: false);
+  if (runes.length <= maxLength) return text;
+  return '${String.fromCharCodes(runes.take(maxLength))}…';
+}
+
+/// Rough token estimate used when the server does not return `usage`.
+/// About 3.5 characters per token for mixed Latin/Cyrillic text.
+int estimateTokens(String text) {
+  final length = text.trim().runes.length;
+  if (length == 0) return 0;
+  return (length / 3.5).ceil();
+}
+
+class ServerConfig {
+  ServerConfig({
+    required this.id,
+    required this.name,
+    required this.baseUrl,
+    this.apiKey = '',
+    this.bridgeUrl = '',
+    this.bridgeToken = '',
+    this.chatViaBridge = true,
+  });
+
+  final String id;
+  String name;
+  String baseUrl;
+  String apiKey;
+
+  /// Optional HTTP bridge running `lms load --gpu` on the server machine.
+  /// Needed because the LM Studio REST API has no GPU offload parameter.
+  String bridgeUrl;
+  String bridgeToken;
+
+  /// Send chat requests through the bridge so the answer is generated on the
+  /// server and survives the app being backgrounded or killed.
+  bool chatViaBridge;
+
+  /// Accepts `192.168.1.5:1234`, `http://host:1234/` or `http://host:1234/v1`.
+  String get normalizedBase {
+    var value = baseUrl.trim();
+    if (value.isEmpty) return value;
+    if (!value.contains('://')) value = 'http://$value';
+    while (value.endsWith('/')) {
+      value = value.substring(0, value.length - 1);
+    }
+    if (value.toLowerCase().endsWith('/v1')) {
+      value = value.substring(0, value.length - 3);
+    }
+    return value;
+  }
+
+  /// Accepts `192.168.1.5:1235` or `http://host:1235/`.
+  String get normalizedBridge {
+    var value = bridgeUrl.trim();
+    if (value.isEmpty) return value;
+    if (!value.contains('://')) value = 'http://$value';
+    while (value.endsWith('/')) {
+      value = value.substring(0, value.length - 1);
+    }
+    return value;
+  }
+
+  /// Default port of the bundled `lms_gpu_bridge.py` HTTP bridge.
+  static const int defaultBridgePort = 1235;
+
+  /// The bridge runs on the same machine as LM Studio, so its address is the
+  /// server host with [defaultBridgePort]. Returns an empty string when
+  /// [baseUrl] has no usable host.
+  static String bridgeUrlForBase(String baseUrl) {
+    var value = baseUrl.trim();
+    if (value.isEmpty) return '';
+    if (!value.contains('://')) value = 'http://$value';
+    final host = Uri.tryParse(value)?.host;
+    if (host == null || host.isEmpty) return '';
+    return Uri(scheme: 'http', host: host, port: defaultBridgePort).toString();
+  }
+
+  bool get hasBridge => normalizedBridge.isNotEmpty;
+
+  bool get isCleartext => normalizedBase.toLowerCase().startsWith('http://');
+
+  /// True for loopback, RFC1918, link-local, CGNAT/Tailscale and `.local`
+  /// names. Public HTTP endpoints are rejected by [securityError].
+  bool get isPrivateHost {
+    final host = Uri.tryParse(normalizedBase)?.host.toLowerCase();
+    if (host == null || host.isEmpty) return false;
+    if (host == 'localhost' || host.endsWith('.local')) return true;
+    final address = InternetAddress.tryParse(host);
+    if (address != null) {
+      final bytes = address.rawAddress;
+      if (address.type == InternetAddressType.IPv4 && bytes.length == 4) {
+        return _isPrivateIpv4(bytes);
+      }
+      if (bytes.length == 16) {
+        final loopback = bytes.take(15).every((b) => b == 0) && bytes[15] == 1;
+        final uniqueLocal = (bytes[0] & 0xfe) == 0xfc; // fc00::/7
+        final linkLocal =
+            bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80; // fe80::/10
+        return loopback || uniqueLocal || linkLocal;
+      }
+    }
+    // Single-label mDNS-style hostnames such as "ubuntu".
+    return !host.contains('.');
+  }
+
+  static bool _isPrivateIpv4(List<int> b) {
+    if (b[0] == 10 || b[0] == 127) return true; // 10/8, 127/8
+    if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true; // 172.16/12
+    if (b[0] == 192 && b[1] == 168) return true; // 192.168/16
+    if (b[0] == 169 && b[1] == 254) return true; // link-local
+    if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return true; // CGNAT
+    return false;
+  }
+
+  /// Null when the address is safe, otherwise a user-facing explanation.
+  String? get securityError {
+    if (!isCleartext || isPrivateHost) return null;
+    return 'HTTP разрешён только для локальной сети. '
+        'Для внешнего сервера используйте HTTPS или Tailscale.';
+  }
+
+  Uri get modelsUri => Uri.parse('$normalizedBase/v1/models');
+  Uri get chatUri => Uri.parse('$normalizedBase/v1/chat/completions');
+  Uri apiV1(String path) => Uri.parse('$normalizedBase/api/v1/$path');
+  Uri bridgeUri(String path) => Uri.parse('$normalizedBridge/$path');
+
+  bool get isValid => normalizedBase.isNotEmpty;
+
+  /// Secrets are included only when [includeSecrets] is true. The default is
+  /// false so persistence, export, sharing and logs cannot leak credentials by
+  /// accident; pass true only for an explicit secure-store migration.
+  Map<String, dynamic> toJson({bool includeSecrets = false}) => {
+    'id': id,
+    'name': name,
+    'baseUrl': baseUrl,
+    if (includeSecrets && apiKey.isNotEmpty) 'apiKey': apiKey,
+    if (bridgeUrl.isNotEmpty) 'bridgeUrl': bridgeUrl,
+    if (includeSecrets && bridgeToken.isNotEmpty) 'bridgeToken': bridgeToken,
+    if (!chatViaBridge) 'chatViaBridge': false,
+  };
+
+  factory ServerConfig.fromJson(Map<String, dynamic> json) => ServerConfig(
+    id: json['id'] as String? ?? newId(),
+    name: json['name'] as String? ?? 'LM Studio',
+    baseUrl: json['baseUrl'] as String? ?? '',
+    apiKey: json['apiKey'] as String? ?? '',
+    bridgeUrl: json['bridgeUrl'] as String? ?? '',
+    bridgeToken: json['bridgeToken'] as String? ?? '',
+    chatViaBridge: json['chatViaBridge'] as bool? ?? true,
+  );
+
+  ServerConfig clone() => ServerConfig(
+    id: id,
+    name: name,
+    baseUrl: baseUrl,
+    apiKey: apiKey,
+    bridgeUrl: bridgeUrl,
+    bridgeToken: bridgeToken,
+    chatViaBridge: chatViaBridge,
+  );
+}
+
+class LoadedInstance {
+  const LoadedInstance({
+    required this.id,
+    this.contextLength,
+    this.flashAttention,
+    this.offloadKvCache,
+    this.evalBatchSize,
+    this.parallel,
+  });
+
+  final String id;
+  final int? contextLength;
+  final bool? flashAttention;
+  final bool? offloadKvCache;
+  final int? evalBatchSize;
+  final int? parallel;
+
+  factory LoadedInstance.fromJson(Map<String, dynamic> json) {
+    final config = json['config'] is Map
+        ? Map<String, dynamic>.from(json['config'] as Map)
+        : const <String, dynamic>{};
+    return LoadedInstance(
+      id: json['id']?.toString() ?? '',
+      contextLength: (config['context_length'] as num?)?.toInt(),
+      flashAttention: config['flash_attention'] as bool?,
+      offloadKvCache: config['offload_kv_cache_to_gpu'] as bool?,
+      evalBatchSize: (config['eval_batch_size'] as num?)?.toInt(),
+      parallel: (config['parallel'] as num?)?.toInt(),
+    );
+  }
+}
+
+class LmModelInfo {
+  const LmModelInfo({
+    required this.key,
+    required this.displayName,
+    this.type = 'llm',
+    this.maxContextLength,
+    this.sizeBytes,
+    this.parameters,
+    this.quantization,
+    this.vision = false,
+    this.loadedInstances = const [],
+  });
+
+  final String key;
+  final String displayName;
+  final String type; // llm | embedding | decision
+  final int? maxContextLength;
+  final int? sizeBytes;
+  final String? parameters;
+  final String? quantization;
+  final bool vision;
+  final List<LoadedInstance> loadedInstances;
+
+  bool get isLlm => type == 'llm' || type.isEmpty;
+  bool get isLoaded => loadedInstances.isNotEmpty;
+  LoadedInstance? get instance =>
+      loadedInstances.isEmpty ? null : loadedInstances.first;
+
+  factory LmModelInfo.fromJson(Map<String, dynamic> json) {
+    final key = (json['key'] ?? json['id'] ?? '').toString();
+    final capabilities = json['capabilities'] is Map
+        ? Map<String, dynamic>.from(json['capabilities'] as Map)
+        : const <String, dynamic>{};
+    final quantization = json['quantization'] is Map
+        ? Map<String, dynamic>.from(json['quantization'] as Map)
+        : null;
+    final loaded = <LoadedInstance>[];
+    final instances = json['loaded_instances'];
+    if (instances is List) {
+      for (final item in instances) {
+        if (item is Map) {
+          loaded.add(LoadedInstance.fromJson(Map<String, dynamic>.from(item)));
+        }
+      }
+    }
+    return LmModelInfo(
+      key: key,
+      displayName: (json['display_name'] ?? json['id'] ?? key).toString(),
+      type: (json['type'] ?? 'llm').toString(),
+      maxContextLength: (json['max_context_length'] as num?)?.toInt(),
+      sizeBytes: (json['size_bytes'] as num?)?.toInt(),
+      parameters: json['params_string']?.toString(),
+      quantization: quantization?['name']?.toString(),
+      vision: capabilities['vision'] == true,
+      loadedInstances: loaded,
+    );
+  }
+}
+
+class LaunchSettings {
+  const LaunchSettings({
+    this.contextLength,
+    this.loadOnDemand = true,
+    this.ttlSeconds,
+    this.flashAttention,
+    this.offloadKvCache,
+    this.evalBatchSize,
+    this.gpuRatio,
+  });
+
+  /// null — использовать значение модели по умолчанию.
+  final int? contextLength;
+
+  /// Загружать модель при первом сообщении, а не заранее.
+  final bool loadOnDemand;
+
+  /// Автовыгрузка простоя, в секундах. null — настройка сервера.
+  final int? ttlSeconds;
+
+  /// null — авто, true — включено, false — выключено.
+  final bool? flashAttention;
+  final bool? offloadKvCache;
+  final int? evalBatchSize;
+
+  /// Доля модели, выгружаемая в видеопамять: 0.0 — только CPU,
+  /// 1.0 — максимум. null — настройка LM Studio.
+  final double? gpuRatio;
+
+  static const Object _unset = Object();
+
+  /// [copyWith] needs a sentinel for nullable fields: passing `null` must mean
+  /// "reset to automatic", while omitting the argument keeps the old value.
+  LaunchSettings copyWith({
+    Object? contextLength = _unset,
+    bool? loadOnDemand,
+    Object? ttlSeconds = _unset,
+    Object? flashAttention = _unset,
+    Object? offloadKvCache = _unset,
+    Object? evalBatchSize = _unset,
+    Object? gpuRatio = _unset,
+  }) => LaunchSettings(
+    contextLength: identical(contextLength, _unset)
+        ? this.contextLength
+        : contextLength as int?,
+    loadOnDemand: loadOnDemand ?? this.loadOnDemand,
+    ttlSeconds: identical(ttlSeconds, _unset)
+        ? this.ttlSeconds
+        : ttlSeconds as int?,
+    flashAttention: identical(flashAttention, _unset)
+        ? this.flashAttention
+        : flashAttention as bool?,
+    offloadKvCache: identical(offloadKvCache, _unset)
+        ? this.offloadKvCache
+        : offloadKvCache as bool?,
+    evalBatchSize: identical(evalBatchSize, _unset)
+        ? this.evalBatchSize
+        : evalBatchSize as int?,
+    gpuRatio: identical(gpuRatio, _unset) ? this.gpuRatio : gpuRatio as double?,
+  );
+
+  Map<String, dynamic> toJson() => {
+    if (contextLength != null) 'contextLength': contextLength,
+    'loadOnDemand': loadOnDemand,
+    if (ttlSeconds != null) 'ttlSeconds': ttlSeconds,
+    if (flashAttention != null) 'flashAttention': flashAttention,
+    if (offloadKvCache != null) 'offloadKvCache': offloadKvCache,
+    if (evalBatchSize != null) 'evalBatchSize': evalBatchSize,
+    if (gpuRatio != null) 'gpuRatio': gpuRatio,
+  };
+
+  factory LaunchSettings.fromJson(Map<String, dynamic> json) => LaunchSettings(
+    contextLength: (json['contextLength'] as num?)?.toInt(),
+    loadOnDemand: json['loadOnDemand'] as bool? ?? true,
+    ttlSeconds: (json['ttlSeconds'] as num?)?.toInt(),
+    flashAttention: json['flashAttention'] as bool?,
+    offloadKvCache: json['offloadKvCache'] as bool?,
+    evalBatchSize: (json['evalBatchSize'] as num?)?.toInt(),
+    gpuRatio: (json['gpuRatio'] as num?)?.toDouble(),
+  );
+}
+
+/// Structured output settings for one chat.
+///
+/// JSON modes use the OpenAI-compatible `response_format` field, which LM
+/// Studio converts into a grammar for GGUF models. The GBNF mode sends a raw
+/// `grammar` field and is meant for llama.cpp-compatible servers.
+class ResponseFormat {
+  const ResponseFormat({
+    this.mode = ResponseFormatMode.text,
+    this.schema = '',
+    this.grammar = '',
+  });
+
+  final ResponseFormatMode mode;
+
+  /// Bare JSON Schema object (not the whole `response_format` wrapper).
+  final String schema;
+
+  /// GBNF grammar text, used only by [ResponseFormatMode.grammar].
+  final String grammar;
+
+  bool get isText => mode == ResponseFormatMode.text;
+
+  bool get isStructured => !isText;
+
+  static const Object _unset = Object();
+
+  ResponseFormat copyWith({
+    ResponseFormatMode? mode,
+    Object? schema = _unset,
+    Object? grammar = _unset,
+  }) => ResponseFormat(
+    mode: mode ?? this.mode,
+    schema: identical(schema, _unset) ? this.schema : schema as String,
+    grammar: identical(grammar, _unset) ? this.grammar : grammar as String,
+  );
+
+  Map<String, dynamic>? _schemaValue() {
+    final raw = schema.trim();
+    if (raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      // Invalid JSON is reported by [validationError].
+    }
+    return null;
+  }
+
+  /// A user-facing reason why this format cannot be sent, or null when valid.
+  String? get validationError {
+    switch (mode) {
+      case ResponseFormatMode.text:
+      case ResponseFormatMode.json:
+        return null;
+      case ResponseFormatMode.jsonSchema:
+        if (schema.trim().isEmpty) return 'Введите JSON-схему ответа';
+        return _schemaValue() == null
+            ? 'Схема ответа — некорректный JSON'
+            : null;
+      case ResponseFormatMode.grammar:
+        return grammar.trim().isEmpty ? 'Введите GBNF-грамматику' : null;
+    }
+  }
+
+  /// Extra fields for `/v1/chat/completions`, or null for plain text.
+  ///
+  /// Invalid configurations return null: callers must check
+  /// [validationError] before starting a generation.
+  Map<String, dynamic>? requestFields() {
+    switch (mode) {
+      case ResponseFormatMode.text:
+        return null;
+      case ResponseFormatMode.json:
+        return {
+          'response_format': {
+            'type': 'json_schema',
+            'json_schema': {
+              'name': 'json_object',
+              // A permissive object schema is the most compatible way to ask
+              // for JSON: LM Studio documents json_schema, not json_object.
+              'strict': false,
+              'schema': const {'type': 'object'},
+            },
+          },
+        };
+      case ResponseFormatMode.jsonSchema:
+        final value = _schemaValue();
+        if (value == null) return null;
+        return {
+          'response_format': {
+            'type': 'json_schema',
+            'json_schema': {
+              'name': 'response',
+              'strict': true,
+              'schema': value,
+            },
+          },
+        };
+      case ResponseFormatMode.grammar:
+        final value = grammar.trim();
+        if (value.isEmpty) return null;
+        return {'grammar': value};
+    }
+  }
+
+  Map<String, dynamic> toJson() => {
+    'mode': mode.name,
+    if (schema.trim().isNotEmpty) 'schema': schema,
+    if (grammar.trim().isNotEmpty) 'grammar': grammar,
+  };
+
+  factory ResponseFormat.fromJson(Map<String, dynamic> json) => ResponseFormat(
+    mode: ResponseFormatMode.values.firstWhere(
+      (mode) => mode.name == json['mode'],
+      orElse: () => ResponseFormatMode.text,
+    ),
+    schema: json['schema'] as String? ?? '',
+    grammar: json['grammar'] as String? ?? '',
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ResponseFormat &&
+      other.mode == mode &&
+      other.schema == schema &&
+      other.grammar == grammar;
+
+  @override
+  int get hashCode => Object.hash(mode, schema, grammar);
+}
+
+/// One answer that was replaced by a newer generation.
+///
+/// Versions are stored oldest first: `versions.last` is the answer that was
+/// visible right before the current one.
+class ChatMessageVersion {
+  ChatMessageVersion({
+    required this.id,
+    required this.content,
+    this.reasoning = '',
+    this.model = '',
+    this.error,
+    this.promptTokens,
+    this.completionTokens,
+    this.totalTokens,
+    this.generationMs,
+    this.firstTokenMs,
+    this.tokensEstimated = false,
+    this.editedAt,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  final String id;
+  final String content;
+  final String reasoning;
+  final String model;
+  final String? error;
+  final int? promptTokens;
+  final int? completionTokens;
+  final int? totalTokens;
+  final int? generationMs;
+
+  /// Time to first token, in milliseconds.
+  final int? firstTokenMs;
+
+  /// true — токены посчитаны приблизительно, без `usage` от сервера.
+  final bool tokensEstimated;
+
+  /// Когда текст был изменён вручную; null — сгенерирован моделью.
+  final DateTime? editedAt;
+  final DateTime createdAt;
+
+  bool get isEmpty => content.trim().isEmpty && reasoning.trim().isEmpty;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'content': content,
+    if (reasoning.isNotEmpty) 'reasoning': reasoning,
+    if (model.isNotEmpty) 'model': model,
+    if (error != null) 'error': error,
+    if (promptTokens != null) 'promptTokens': promptTokens,
+    if (completionTokens != null) 'completionTokens': completionTokens,
+    if (totalTokens != null) 'totalTokens': totalTokens,
+    if (generationMs != null) 'generationMs': generationMs,
+    if (firstTokenMs != null) 'firstTokenMs': firstTokenMs,
+    if (tokensEstimated) 'tokensEstimated': true,
+    if (editedAt != null) 'editedAt': editedAt!.toIso8601String(),
+    'createdAt': createdAt.toIso8601String(),
+  };
+
+  factory ChatMessageVersion.fromJson(Map<String, dynamic> json) =>
+      ChatMessageVersion(
+        id: json['id'] as String? ?? newId(),
+        content: json['content'] as String? ?? '',
+        reasoning: json['reasoning'] as String? ?? '',
+        model: json['model'] as String? ?? '',
+        error: json['error'] as String?,
+        promptTokens: (json['promptTokens'] as num?)?.toInt(),
+        completionTokens: (json['completionTokens'] as num?)?.toInt(),
+        totalTokens: (json['totalTokens'] as num?)?.toInt(),
+        generationMs: (json['generationMs'] as num?)?.toInt(),
+        firstTokenMs: (json['firstTokenMs'] as num?)?.toInt(),
+        tokensEstimated: json['tokensEstimated'] as bool? ?? false,
+        editedAt: DateTime.tryParse(json['editedAt'] as String? ?? ''),
+        createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
+      );
+}
+
+class ChatAttachment {
+  const ChatAttachment({
+    required this.id,
+    required this.mimeType,
+    required this.data,
+    this.name = '',
+  });
+
+  final String id;
+  final String mimeType;
+
+  /// Base64-encoded bytes, stored with the message in `lm_chat_data.json`.
+  final String data;
+  final String name;
+
+  Uint8List get bytes {
+    try {
+      return base64Decode(data);
+    } catch (_) {
+      return Uint8List(0);
+    }
+  }
+
+  String get dataUrl => 'data:$mimeType;base64,$data';
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'mimeType': mimeType,
+    'data': data,
+    if (name.isNotEmpty) 'name': name,
+  };
+
+  factory ChatAttachment.fromJson(Map<String, dynamic> json) => ChatAttachment(
+    id: json['id'] as String? ?? newId(),
+    mimeType: json['mimeType'] as String? ?? 'image/jpeg',
+    data: json['data'] as String? ?? '',
+    name: json['name'] as String? ?? '',
+  );
+}
+
+class ChatMessage {
+  ChatMessage({
+    required this.id,
+    required this.role,
+    this.content = '',
+    this.reasoning = '',
+    this.model = '',
+    List<ChatAttachment>? attachments,
+    DateTime? createdAt,
+    this.error,
+    this.jobId,
+    this.jobServerId,
+    this.jobSeq = 0,
+    List<ChatMessageVersion>? versions,
+    this.activeVersion = 0,
+    this.promptTokens,
+    this.completionTokens,
+    this.totalTokens,
+    this.generationMs,
+    this.firstTokenMs,
+    this.tokensEstimated = false,
+    this.generationStartedAt,
+    this.editedAt,
+    this.notice,
+  }) : versions = versions ?? [],
+       attachments = attachments ?? [],
+       createdAt = createdAt ?? DateTime.now();
+
+  final String id;
+  final String role; // user | assistant
+  String content;
+  String reasoning;
+
+  /// Images attached to a user message.
+  final List<ChatAttachment> attachments;
+
+  /// Model that produced the current answer.
+  String model;
+
+  final DateTime createdAt;
+  String? error;
+
+  /// Bridge job that is still generating this answer. Persisted so the app can
+  /// pick the answer up again after being closed in the background.
+  String? jobId;
+  String? jobServerId;
+
+  /// Number of the next bridge event to fetch.
+  int jobSeq;
+
+  /// Answers that were replaced by a regenerated one. The current answer lives
+  /// in [content]/[reasoning]; this list keeps everything that came before it.
+  final List<ChatMessageVersion> versions;
+
+  /// Which answer is shown: 0 — the current (newest) one, 1..[versions].length —
+  /// an archived version (1 is the oldest).
+  int activeVersion;
+
+  /// Statistics of the current answer, persisted with the chat.
+  int? promptTokens;
+  int? completionTokens;
+  int? totalTokens;
+  int? generationMs;
+
+  /// Time to first token of the current answer, in milliseconds.
+  int? firstTokenMs;
+
+  /// true — токены посчитаны приблизительно, без `usage` от сервера.
+  bool tokensEstimated;
+
+  /// Wall-clock start of the generation, kept so a bridge job resumed after a
+  /// restart can still report a plausible duration.
+  DateTime? generationStartedAt;
+
+  /// When the answer was edited by hand; null — generated by the model.
+  DateTime? editedAt;
+
+  /// A non-fatal problem with this answer, for example that the server could
+  /// not apply the requested context window or GPU offload. Persisted so the
+  /// warning is still visible after a restart.
+  String? notice;
+
+  /// Transient flags: never persisted.
+  bool streaming = false;
+  String? status;
+
+  bool get isUser => role == 'user';
+
+  bool get hasPendingJob => jobId != null && jobId!.isNotEmpty;
+
+  bool get hasVersions => versions.isNotEmpty;
+
+  /// Total number of answers, including the current one.
+  int get versionCount => versions.length + 1;
+
+  /// 1-based number of the answer currently shown.
+  int get displayedVersionNumber =>
+      activeVersion <= 0 || activeVersion >= versionCount
+      ? versionCount
+      : activeVersion;
+
+  bool get viewingLatest => displayedVersionNumber == versionCount;
+
+  ChatMessageVersion? get _displayedVersion =>
+      viewingLatest ? null : versions[displayedVersionNumber - 1];
+
+  String get displayContent => _displayedVersion?.content ?? content;
+
+  String get displayReasoning => _displayedVersion?.reasoning ?? reasoning;
+
+  String? get displayError => viewingLatest ? error : _displayedVersion?.error;
+
+  /// Notices belong to the current answer; archived variants have none.
+  String? get displayNotice => viewingLatest ? notice : null;
+
+  String get displayModel =>
+      viewingLatest ? model : (_displayedVersion?.model ?? '');
+
+  DateTime get displayCreatedAt => _displayedVersion?.createdAt ?? createdAt;
+
+  int? get displayPromptTokens =>
+      viewingLatest ? promptTokens : _displayedVersion?.promptTokens;
+
+  int? get displayCompletionTokens =>
+      viewingLatest ? completionTokens : _displayedVersion?.completionTokens;
+
+  int? get displayTotalTokens =>
+      viewingLatest ? totalTokens : _displayedVersion?.totalTokens;
+
+  int? get displayGenerationMs =>
+      viewingLatest ? generationMs : _displayedVersion?.generationMs;
+
+  int? get displayFirstTokenMs =>
+      viewingLatest ? firstTokenMs : _displayedVersion?.firstTokenMs;
+
+  bool get displayTokensEstimated => viewingLatest
+      ? tokensEstimated
+      : (_displayedVersion?.tokensEstimated ?? false);
+
+  DateTime? get displayEditedAt =>
+      viewingLatest ? editedAt : _displayedVersion?.editedAt;
+
+  bool get hasStats =>
+      displayGenerationMs != null || displayCompletionTokens != null;
+
+  /// Average generation speed of the displayed answer.
+  double? get displayTokensPerSecond {
+    final tokens = displayCompletionTokens;
+    final millis = displayGenerationMs;
+    if (tokens == null || tokens <= 0 || millis == null || millis <= 0) {
+      return null;
+    }
+    return tokens * 1000 / millis;
+  }
+
+  /// Snapshot of any answer by its 1-based number, without changing selection.
+  ChatMessageVersion variantAt(int ordinal) {
+    final number = ordinal.clamp(1, versionCount);
+    if (number == versionCount) {
+      return ChatMessageVersion(
+        id: id,
+        content: content,
+        reasoning: reasoning,
+        model: model,
+        error: error,
+        promptTokens: promptTokens,
+        completionTokens: completionTokens,
+        totalTokens: totalTokens,
+        generationMs: generationMs,
+        firstTokenMs: firstTokenMs,
+        tokensEstimated: tokensEstimated,
+        editedAt: editedAt,
+        createdAt: createdAt,
+      );
+    }
+    return versions[number - 1];
+  }
+
+  /// Shows the answer with the given 1-based number. [versionCount] means the
+  /// current one.
+  void selectVersion(int ordinal) {
+    if (ordinal <= 1) {
+      activeVersion = versionCount == 1 ? 0 : 1;
+    } else if (ordinal >= versionCount) {
+      activeVersion = 0;
+    } else {
+      activeVersion = ordinal;
+    }
+  }
+
+  /// Moves the current answer into [versions] and clears the fields for a new
+  /// generation. Returns null when there is nothing worth keeping.
+  ChatMessageVersion? archiveCurrent({String? model}) {
+    if (content.trim().isEmpty && reasoning.trim().isEmpty) return null;
+    final version = ChatMessageVersion(
+      id: newId(),
+      content: content,
+      reasoning: reasoning,
+      model: model ?? this.model,
+      error: error,
+      promptTokens: promptTokens,
+      completionTokens: completionTokens,
+      totalTokens: totalTokens,
+      generationMs: generationMs,
+      firstTokenMs: firstTokenMs,
+      tokensEstimated: tokensEstimated,
+      editedAt: editedAt,
+      // Keep the time the answer was actually produced. Falling back to
+      // `createdAt` covers messages restored from an older file.
+      createdAt: generationStartedAt ?? createdAt,
+    );
+    versions.add(version);
+    content = '';
+    reasoning = '';
+    error = null;
+    jobId = null;
+    jobServerId = null;
+    jobSeq = 0;
+    promptTokens = null;
+    completionTokens = null;
+    totalTokens = null;
+    generationMs = null;
+    firstTokenMs = null;
+    tokensEstimated = false;
+    generationStartedAt = null;
+    editedAt = null;
+    activeVersion = 0;
+    return version;
+  }
+
+  /// Puts the last archived answer back as the current one. Used when a
+  /// regeneration fails without producing any text.
+  bool restoreLatestArchived() {
+    if (versions.isEmpty) return false;
+    final last = versions.removeLast();
+    content = last.content;
+    reasoning = last.reasoning;
+    error = last.error;
+    model = last.model;
+    promptTokens = last.promptTokens;
+    completionTokens = last.completionTokens;
+    totalTokens = last.totalTokens;
+    generationMs = last.generationMs;
+    firstTokenMs = last.firstTokenMs;
+    tokensEstimated = last.tokensEstimated;
+    editedAt = last.editedAt;
+    generationStartedAt = null;
+    activeVersion = 0;
+    return true;
+  }
+
+  /// Deletes an archived answer. The current (newest) answer cannot be deleted
+  /// this way.
+  void deleteVersion(int ordinal) {
+    if (ordinal < 1 || ordinal >= versionCount) return;
+    versions.removeAt(ordinal - 1);
+    if (activeVersion == ordinal) {
+      activeVersion = 0;
+    } else if (activeVersion > ordinal) {
+      activeVersion -= 1;
+    }
+    if (activeVersion >= versionCount) activeVersion = 0;
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'role': role,
+    'content': content,
+    if (reasoning.isNotEmpty) 'reasoning': reasoning,
+    if (model.isNotEmpty) 'model': model,
+    if (attachments.isNotEmpty)
+      'attachments': attachments.map((a) => a.toJson()).toList(),
+    'createdAt': createdAt.toIso8601String(),
+    if (error != null) 'error': error,
+    if (notice != null && notice!.isNotEmpty) 'notice': notice,
+    if (jobId != null) 'jobId': jobId,
+    if (jobServerId != null) 'jobServerId': jobServerId,
+    if (jobSeq > 0) 'jobSeq': jobSeq,
+    if (promptTokens != null) 'promptTokens': promptTokens,
+    if (completionTokens != null) 'completionTokens': completionTokens,
+    if (totalTokens != null) 'totalTokens': totalTokens,
+    if (generationMs != null) 'generationMs': generationMs,
+    if (firstTokenMs != null) 'firstTokenMs': firstTokenMs,
+    if (tokensEstimated) 'tokensEstimated': true,
+    if (generationStartedAt != null)
+      'generationStartedAt': generationStartedAt!.toIso8601String(),
+    if (editedAt != null) 'editedAt': editedAt!.toIso8601String(),
+    if (versions.isNotEmpty)
+      'versions': versions.map((v) => v.toJson()).toList(),
+    if (activeVersion > 0) 'activeVersion': activeVersion,
+  };
+
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    final versions =
+        (json['versions'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(ChatMessageVersion.fromJson)
+            .toList() ??
+        [];
+    var active = (json['activeVersion'] as num?)?.toInt() ?? 0;
+    if (active < 0 || active > versions.length) active = 0;
+    return ChatMessage(
+      id: json['id'] as String? ?? newId(),
+      role: json['role'] as String? ?? 'assistant',
+      content: json['content'] as String? ?? '',
+      reasoning: json['reasoning'] as String? ?? '',
+      model: json['model'] as String? ?? '',
+      attachments:
+          (json['attachments'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .map(ChatAttachment.fromJson)
+              .toList() ??
+          [],
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
+      error: json['error'] as String?,
+      notice: json['notice'] as String?,
+      jobId: json['jobId'] as String?,
+      jobServerId: json['jobServerId'] as String?,
+      jobSeq: (json['jobSeq'] as num?)?.toInt() ?? 0,
+      versions: versions,
+      activeVersion: active,
+      promptTokens: (json['promptTokens'] as num?)?.toInt(),
+      completionTokens: (json['completionTokens'] as num?)?.toInt(),
+      totalTokens: (json['totalTokens'] as num?)?.toInt(),
+      generationMs: (json['generationMs'] as num?)?.toInt(),
+      firstTokenMs: (json['firstTokenMs'] as num?)?.toInt(),
+      tokensEstimated: json['tokensEstimated'] as bool? ?? false,
+      generationStartedAt: DateTime.tryParse(
+        json['generationStartedAt'] as String? ?? '',
+      ),
+      editedAt: DateTime.tryParse(json['editedAt'] as String? ?? ''),
+    );
+  }
+}
+
+class ChatSession {
+  ChatSession({
+    required this.id,
+    this.title = 'Новый чат',
+    required this.serverId,
+    this.model = '',
+    List<ChatMessage>? messages,
+    this.temperature = 0.7,
+    this.topP = 0.95,
+    this.topK = 0,
+    this.repeatPenalty = 1.0,
+    this.maxTokens = -1,
+    this.systemPrompt = '',
+    this.responseFormat = const ResponseFormat(),
+    this.launch = const LaunchSettings(),
+    this.pinned = false,
+    this.archived = false,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) : messages = messages ?? [],
+       createdAt = createdAt ?? DateTime.now(),
+       updatedAt = updatedAt ?? DateTime.now();
+
+  final String id;
+  String title;
+  String serverId;
+  String model;
+  final List<ChatMessage> messages;
+  double temperature;
+  double topP;
+
+  /// 0 means "use the server/model default"; LM Studio accepts `top_k` as an
+  /// OpenAI-compatible extension.
+  int topK;
+
+  /// 1.0 means "no penalty". Values above 1.0 make repeated tokens less likely.
+  double repeatPenalty;
+
+  int maxTokens;
+  String systemPrompt;
+  ResponseFormat responseFormat;
+  LaunchSettings launch;
+  bool pinned;
+  bool archived;
+  final DateTime createdAt;
+  DateTime updatedAt;
+
+  /// Copy used when an imported chat collides with an existing id.
+  ChatSession clone({String? id, String? serverId}) => ChatSession(
+    id: id ?? this.id,
+    title: title,
+    serverId: serverId ?? this.serverId,
+    model: model,
+    messages: messages,
+    temperature: temperature,
+    topP: topP,
+    topK: topK,
+    repeatPenalty: repeatPenalty,
+    maxTokens: maxTokens,
+    systemPrompt: systemPrompt,
+    responseFormat: responseFormat,
+    launch: launch,
+    pinned: pinned,
+    archived: archived,
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'serverId': serverId,
+    'model': model,
+    'messages': messages.map((m) => m.toJson()).toList(),
+    'temperature': temperature,
+    'topP': topP,
+    if (topK > 0) 'topK': topK,
+    if (repeatPenalty != 1.0) 'repeatPenalty': repeatPenalty,
+    'maxTokens': maxTokens,
+    'systemPrompt': systemPrompt,
+    if (responseFormat.isStructured) 'responseFormat': responseFormat.toJson(),
+    'launch': launch.toJson(),
+    if (pinned) 'pinned': true,
+    if (archived) 'archived': true,
+    'createdAt': createdAt.toIso8601String(),
+    'updatedAt': updatedAt.toIso8601String(),
+  };
+
+  factory ChatSession.fromJson(Map<String, dynamic> json) => ChatSession(
+    id: json['id'] as String? ?? newId(),
+    title: json['title'] as String? ?? 'Новый чат',
+    serverId: json['serverId'] as String? ?? '',
+    model: json['model'] as String? ?? '',
+    messages:
+        (json['messages'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(ChatMessage.fromJson)
+            .toList() ??
+        [],
+    temperature: (json['temperature'] as num?)?.toDouble() ?? 0.7,
+    topP: (json['topP'] as num?)?.toDouble() ?? 0.95,
+    topK: ((json['topK'] as num?)?.toInt() ?? 0).clamp(0, 1000),
+    repeatPenalty: ((json['repeatPenalty'] as num?)?.toDouble() ?? 1.0)
+        .clamp(0.5, 2.0)
+        .toDouble(),
+    maxTokens: (json['maxTokens'] as num?)?.toInt() ?? -1,
+    systemPrompt: json['systemPrompt'] as String? ?? '',
+    responseFormat: json['responseFormat'] is Map
+        ? ResponseFormat.fromJson(
+            Map<String, dynamic>.from(json['responseFormat'] as Map),
+          )
+        : const ResponseFormat(),
+    launch: json['launch'] is Map
+        ? LaunchSettings.fromJson(
+            Map<String, dynamic>.from(json['launch'] as Map),
+          )
+        : const LaunchSettings(),
+    pinned: json['pinned'] as bool? ?? false,
+    archived: json['archived'] as bool? ?? false,
+    createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
+    updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? ''),
+  );
+}
+
+class PromptTemplate {
+  const PromptTemplate({
+    required this.id,
+    required this.name,
+    required this.content,
+    this.builtIn = false,
+  });
+
+  final String id;
+  final String name;
+  final String content;
+  final bool builtIn;
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'content': content};
+
+  factory PromptTemplate.fromJson(Map<String, dynamic> json) => PromptTemplate(
+    id: json['id'] as String? ?? newId(),
+    name: json['name'] as String? ?? 'Без названия',
+    content: json['content'] as String? ?? '',
+  );
+}
+
+const builtInPromptTemplates = <PromptTemplate>[
+  PromptTemplate(
+    id: 'builtin-concise',
+    name: 'Кратко и по делу',
+    content:
+        'Отвечай кратко и по существу. Не повторяй вопрос, не добавляй '
+        'вступлений и извинений. Если нужен список — используй короткие пункты.',
+    builtIn: true,
+  ),
+  PromptTemplate(
+    id: 'builtin-teacher',
+    name: 'Подробный наставник',
+    content:
+        'Объясняй пошагово и простыми словами. Сначала дай короткий ответ, '
+        'затем разбор с примерами. Отмечай типичные ошибки и важные нюансы.',
+    builtIn: true,
+  ),
+  PromptTemplate(
+    id: 'builtin-code',
+    name: 'Опытный разработчик',
+    content:
+        'Ты опытный разработчик. Предлагай рабочий код, объясняй ключевые '
+        'решения и компромиссы. Учитывай обработку ошибок и граничные случаи. '
+        'Не выдумывай API, которых нет.',
+    builtIn: true,
+  ),
+  PromptTemplate(
+    id: 'builtin-structured',
+    name: 'Структурированный ответ',
+    content:
+        'Отвечай в структурированном виде: краткое резюме, затем разделы с '
+        'заголовками, таблицами или списками, если это уместно. В конце — '
+        'один практический следующий шаг.',
+    builtIn: true,
+  ),
+  PromptTemplate(
+    id: 'builtin-translator',
+    name: 'Переводчик',
+    content:
+        'Переводи текст на указанный язык, сохраняя смысл, тон и форматирование. '
+        'Если термин неоднозначен, предложи короткий вариант перевода в скобках. '
+        'Не добавляй пояснений, если пользователь не просил.',
+    builtIn: true,
+  ),
+];
+
+class AppData {
+  /// Increment when the on-disk shape changes in a way that needs migration.
+  static const int currentSchemaVersion = 14;
+
+  AppData({
+    List<ServerConfig>? servers,
+    List<ChatSession>? chats,
+    this.activeServerId,
+    this.defaultTemperature = 0.7,
+    this.defaultTopP = 0.95,
+    this.defaultTopK = 0,
+    this.defaultRepeatPenalty = 1.0,
+    this.defaultMaxTokens = -1,
+    this.defaultSystemPrompt = '',
+    this.defaultResponseFormat = const ResponseFormat(),
+    this.defaultLaunch = const LaunchSettings(
+      flashAttention: true,
+      offloadKvCache: true,
+      evalBatchSize: 2048,
+    ),
+    this.setupDone = false,
+    this.backgroundGeneration = true,
+    this.themeMode = AppThemeMode.dark,
+    this.appLanguage = AppLanguage.ru,
+    this.fontFamily = AppFontFamily.system,
+    this.fontScale = 1.0,
+    this.customFontName = '',
+    this.customFontFamily = '',
+    this.customFontFile = '',
+    this.uiDensity = UiDensity.normal,
+    this.sidebarWidth = 320,
+    this.sidebarCollapsed = false,
+    List<PromptTemplate>? promptTemplates,
+    this.schemaVersion = currentSchemaVersion,
+  }) : servers = servers ?? [],
+       chats = chats ?? [],
+       promptTemplates = promptTemplates ?? [];
+
+  int schemaVersion;
+  AppThemeMode themeMode;
+  AppLanguage appLanguage;
+  AppFontFamily fontFamily;
+  double fontScale;
+
+  /// Display name and runtime family of a font imported from a local TTF file.
+  /// [customFontFile] is a file name inside the app's documents folder, not an
+  /// absolute path, so it survives reinstalls and moved profiles.
+  String customFontName;
+  String customFontFamily;
+  String customFontFile;
+
+  /// Resolves the font family that should be passed to [ThemeData].
+  String? get effectiveFontFamily => switch (fontFamily) {
+    AppFontFamily.system => null,
+    AppFontFamily.inter => 'Inter',
+    AppFontFamily.manrope => 'Manrope',
+    AppFontFamily.custom => customFontFamily.isEmpty ? null : customFontFamily,
+  };
+  UiDensity uiDensity;
+
+  /// Desktop chat-list width in logical pixels. Persisted so the window keeps
+  /// its layout between launches.
+  double sidebarWidth;
+  bool sidebarCollapsed;
+  final List<ServerConfig> servers;
+  final List<ChatSession> chats;
+  final List<PromptTemplate> promptTemplates;
+  String? activeServerId;
+  double defaultTemperature;
+  double defaultTopP;
+  int defaultTopK;
+  double defaultRepeatPenalty;
+  int defaultMaxTokens;
+  String defaultSystemPrompt;
+  ResponseFormat defaultResponseFormat;
+  LaunchSettings defaultLaunch;
+  bool setupDone;
+
+  /// Keep the process awake with a foreground service while an answer is being
+  /// generated, so Android does not freeze the connection.
+  bool backgroundGeneration;
+
+  static LaunchSettings _defaultLaunchFromJson(Object? value) {
+    final launch = value is Map
+        ? LaunchSettings.fromJson(Map<String, dynamic>.from(value))
+        : const LaunchSettings();
+    return launch.copyWith(
+      flashAttention: launch.flashAttention ?? true,
+      offloadKvCache: launch.offloadKvCache ?? true,
+      evalBatchSize: launch.evalBatchSize ?? 2048,
+    );
+  }
+
+  /// Secrets are excluded by default. The history writer never enables them;
+  /// credentials are stored separately in the platform keystore.
+  Map<String, dynamic> toJson({bool includeSecrets = false}) => {
+    'schemaVersion': schemaVersion,
+    'servers': servers
+        .map((s) => s.toJson(includeSecrets: includeSecrets))
+        .toList(),
+    'chats': chats.map((c) => c.toJson()).toList(),
+    'promptTemplates': promptTemplates.map((t) => t.toJson()).toList(),
+    'activeServerId': activeServerId,
+    'defaultTemperature': defaultTemperature,
+    'defaultTopP': defaultTopP,
+    if (defaultTopK > 0) 'defaultTopK': defaultTopK,
+    if (defaultRepeatPenalty != 1.0)
+      'defaultRepeatPenalty': defaultRepeatPenalty,
+    'defaultMaxTokens': defaultMaxTokens,
+    'defaultSystemPrompt': defaultSystemPrompt,
+    if (defaultResponseFormat.isStructured)
+      'defaultResponseFormat': defaultResponseFormat.toJson(),
+    'defaultLaunch': defaultLaunch.toJson(),
+    'setupDone': setupDone,
+    'backgroundGeneration': backgroundGeneration,
+    'themeMode': themeMode.name,
+    'appLanguage': appLanguage.name,
+    'fontFamily': fontFamily.name,
+    'fontScale': fontScale,
+    'customFontName': customFontName,
+    'customFontFamily': customFontFamily,
+    'customFontFile': customFontFile,
+    'uiDensity': uiDensity.name,
+    'sidebarWidth': sidebarWidth,
+    'sidebarCollapsed': sidebarCollapsed,
+  };
+
+  factory AppData.fromJson(Map<String, dynamic> json) => AppData(
+    schemaVersion: (json['schemaVersion'] as num?)?.toInt() ?? 1,
+    servers:
+        (json['servers'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(ServerConfig.fromJson)
+            .toList() ??
+        [],
+    chats:
+        (json['chats'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(ChatSession.fromJson)
+            .toList() ??
+        [],
+    promptTemplates:
+        (json['promptTemplates'] as List?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(PromptTemplate.fromJson)
+            .toList() ??
+        [],
+    activeServerId: json['activeServerId'] as String?,
+    defaultTemperature: (json['defaultTemperature'] as num?)?.toDouble() ?? 0.7,
+    defaultTopP: (json['defaultTopP'] as num?)?.toDouble() ?? 0.95,
+    defaultTopK: ((json['defaultTopK'] as num?)?.toInt() ?? 0).clamp(0, 1000),
+    defaultRepeatPenalty:
+        ((json['defaultRepeatPenalty'] as num?)?.toDouble() ?? 1.0)
+            .clamp(0.5, 2.0)
+            .toDouble(),
+    defaultMaxTokens: (json['defaultMaxTokens'] as num?)?.toInt() ?? -1,
+    defaultSystemPrompt: json['defaultSystemPrompt'] as String? ?? '',
+    defaultResponseFormat: json['defaultResponseFormat'] is Map
+        ? ResponseFormat.fromJson(
+            Map<String, dynamic>.from(json['defaultResponseFormat'] as Map),
+          )
+        : const ResponseFormat(),
+    defaultLaunch: _defaultLaunchFromJson(json['defaultLaunch']),
+    setupDone: json['setupDone'] as bool? ?? false,
+    backgroundGeneration: json['backgroundGeneration'] as bool? ?? true,
+    themeMode: AppThemeMode.values.firstWhere(
+      (mode) => mode.name == json['themeMode'],
+      orElse: () => AppThemeMode.dark,
+    ),
+    appLanguage: AppLanguage.values.firstWhere(
+      (language) => language.name == json['appLanguage'],
+      orElse: () => AppLanguage.ru,
+    ),
+    fontFamily: AppFontFamily.values.firstWhere(
+      (font) => font.name == json['fontFamily'],
+      orElse: () => AppFontFamily.system,
+    ),
+    fontScale: ((json['fontScale'] as num?)?.toDouble() ?? 1.0).clamp(
+      0.85,
+      1.3,
+    ),
+    customFontName: json['customFontName'] as String? ?? '',
+    customFontFamily: json['customFontFamily'] as String? ?? '',
+    customFontFile: json['customFontFile'] as String? ?? '',
+    uiDensity: UiDensity.values.firstWhere(
+      (density) => density.name == json['uiDensity'],
+      orElse: () => UiDensity.normal,
+    ),
+    sidebarWidth: ((json['sidebarWidth'] as num?)?.toDouble() ?? 320).clamp(
+      240,
+      480,
+    ),
+    sidebarCollapsed: json['sidebarCollapsed'] as bool? ?? false,
+  );
+}

@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+# Test fixtures deliberately contain fake credentials. Keep them out of the
+# scan, but never add real tokens to these paths.
+[[allowlists]]
+description = "test fixtures and documentation placeholders"
+paths = [
+  '''test/.*''',
+  '''tools/test_lms_gpu_bridge.py''',
+]
+regexes = [
+  '''api-secret''',
+  '''bridge-secret''',
+  '''secret-token''',
+  '''test-token''',
+  '''smoke-token''',
+  '''придумайте-длинный-токен''',
+]
