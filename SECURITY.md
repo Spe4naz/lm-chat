@@ -45,6 +45,6 @@ may warn even though the downloaded file is hash-checked.
 ## Local network
 
 The app, bridge and plugin are intended for a trusted LAN. If you expose ports
-`1234`, `1235` or `1236` outside the LAN, put them behind a VPN or an
+`1234`, `1235`, `1236` or `1237` outside the LAN, put them behind a VPN or an
 authenticated reverse proxy. The plugin intentionally requires a bearer token
 for `/api` and `/mcp`.
