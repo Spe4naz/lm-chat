@@ -30,6 +30,18 @@ The source tree must never contain live credentials:
 If a real token was committed or shared, rotate it first, then remove it from
 the repository history. Removing the file alone is not enough.
 
+## Updates
+
+Auto-update uses the public GitHub Releases API for `Spe4naz/lm-chat`. The app
+downloads the asset selected for the current platform and verifies its SHA-256
+digest from the GitHub API before execution. The GitHub token is not required
+and is never embedded in the app.
+
+Android releases must be signed with the same key as the installed app.
+The current release is debug-signed for sideloading; public releases should use
+a stable release keystore. The Windows installer is unsigned, so SmartScreen
+may warn even though the downloaded file is hash-checked.
+
 ## Local network
 
 The app, bridge and plugin are intended for a trusted LAN. If you expose ports
