@@ -190,7 +190,11 @@ class UpdateService extends ChangeNotifier {
     }
     try {
       final info = await PackageInfo.fromPlatform();
-      return _tryVersion('${info.version}+${info.buildNumber}');
+      final raw = info.version.trim();
+      if (raw.isEmpty) return null;
+      if (raw.contains('+')) return _tryVersion(raw);
+      final build = info.buildNumber.trim();
+      return _tryVersion(build.isEmpty ? raw : '$raw+$build');
     } catch (_) {
       return null;
     }
