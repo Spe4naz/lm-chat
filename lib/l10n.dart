@@ -442,6 +442,26 @@ class L10n {
         'Could not save tokens to secure storage.',
     'Не удалось удалить токены из истории: {error}':
         'Could not remove tokens from the history: {error}',
+    'Обновления': 'Updates',
+    'Проверять обновления': 'Check for updates automatically',
+    'Автоматически раз в несколько часов через GitHub Releases':
+        'Automatically every few hours via GitHub Releases',
+    'Проверить обновления': 'Check for updates',
+    'Проверка обновлений…': 'Checking for updates…',
+    'Доступна версия {version}': 'Version {version} is available',
+    'Проверить наличие новой версии': 'Check for a new version',
+    'Обновлений нет': 'You are up to date',
+    'Доступно обновление {version}': 'Update available: {version}',
+    'Обновить приложение': 'Update app',
+    'Позже': 'Later',
+    'Обновление LM Chat': 'LM Chat update',
+    'Новая версия: {version}': 'New version: {version}',
+    'Текущая версия: {version}': 'Current version: {version}',
+    'Заметки к релизу': 'Release notes',
+    'Скачивание: {percent}%': 'Downloading: {percent}%',
+    'Установка…': 'Installing…',
+    'Скачать и установить': 'Download and install',
+    'Файл скачивается с GitHub и проверяется по SHA-256 перед установкой.': 'The file is downloaded from GitHub and verified with SHA-256 before installation.',
     'Не удалось применить профиль: {error}':
         'Could not apply the profile: {error}',
     'Это не файл профиля LM Chat': 'This is not an LM Chat profile file',
@@ -492,7 +512,7 @@ class L10n {
         'An updated lms_gpu_bridge.py is required.',
     'Адрес LM Studio': 'LM Studio address',
     'Работает только в локальной сети': 'Works on the local network only',
-    'LM Chat · 1.7.1': 'LM Chat · 1.7.1',
+    'LM Chat · 1.8.0': 'LM Chat · 1.8.0',
 
     // ------------------------------------------------------------ model dialog
     'Запуск по умолчанию': 'Default launch',
@@ -513,7 +533,7 @@ class L10n {
     'Лог хранится только в памяти и очищается при':
         'The log is kept in memory and cleared when',
     'закрытии приложения.': 'the app is closed.',
-    'LM Chat 1.7.1': 'LM Chat 1.7.1',
+    'LM Chat 1.8.0': 'LM Chat 1.8.0',
 
     // ------------------------------------------------------------ import
     '{count} сервер(ов)': '{count} server(s)',

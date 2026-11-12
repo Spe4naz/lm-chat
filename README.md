@@ -77,6 +77,8 @@ Android-клиент (а также приложение для Windows) для 
 - Настройки запуска задаются отдельно для каждого чата и как значения
   по умолчанию для новых чатов.
 - Несколько серверов (LM Studio, Ollama, любой OpenAI-совместимый endpoint).
+- Автообновление через GitHub Releases: проверка версии, скачивание с проверкой
+  SHA-256 и установка APK или Windows-установщика.
 - Несколько чатов могут генерировать ответы одновременно.
 - API-токены и токены мостика хранятся в системном хранилище (Android
   Keystore / Windows Credential Manager), а не в JSON. Если системное
@@ -508,6 +510,11 @@ adb install -r build/app/outputs/flutter-apk/app-release.apk
 и путь к файлу. Пока `key.properties` нет, release-сборка подписывается
 debug-ключом, чтобы `flutter run --release` работал локально.
 
+Для автообновления все APK должны быть подписаны **одним и тем же ключом**.
+Если подпись следующей версии отличается, Android откажется устанавливать
+обновление. Debug-ключ подходит только для личных сборок; для публичных
+релизов настройте `key.properties` и храните keystore отдельно.
+
 ## Сборка для Windows
 
 Требования: Flutter 3.47+, Visual Studio с рабочей нагрузкой
@@ -538,7 +545,7 @@ flutter build windows --release
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" "installer\lm_chat.iss"
 ```
 
-Результат: `dist/lm-chat-setup-1.7.1.exe`.
+Результат: `dist/lm-chat-setup-1.8.0.exe`.
 
 - Устанавливается только для текущего пользователя, без UAC, в
   `%LOCALAPPDATA%\Programs\LM Chat`.

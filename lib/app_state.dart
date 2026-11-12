@@ -697,6 +697,24 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void setBackgroundGeneration(bool value) =>
       _settings.setBackgroundGeneration(value);
 
+  void setAutoCheckUpdates(bool value) {
+    if (data.autoCheckUpdates == value) return;
+    data.autoCheckUpdates = value;
+    _scheduleSave();
+    notifyListeners();
+  }
+
+  void markUpdateChecked() {
+    data.lastUpdateCheck = DateTime.now();
+    _scheduleSave();
+  }
+
+  void skipUpdate(String tag) {
+    data.skippedUpdateTag = tag;
+    _scheduleSave();
+    notifyListeners();
+  }
+
   void setThemeMode(AppThemeMode mode) => _settings.setThemeMode(mode);
 
   void setFontFamily(AppFontFamily family) => _settings.setFontFamily(family);

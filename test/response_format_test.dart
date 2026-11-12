@@ -106,7 +106,7 @@ void main() {
       expect(restoredData.defaultResponseFormat.mode, ResponseFormatMode.json);
       expect(restoredData.defaultTopK, 64);
       expect(restoredData.defaultRepeatPenalty, 1.1);
-      expect(AppData.currentSchemaVersion, 14);
+      expect(AppData.currentSchemaVersion, 15);
     });
   });
 

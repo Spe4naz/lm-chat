@@ -1151,7 +1151,7 @@ const builtInPromptTemplates = <PromptTemplate>[
 
 class AppData {
   /// Increment when the on-disk shape changes in a way that needs migration.
-  static const int currentSchemaVersion = 14;
+  static const int currentSchemaVersion = 15;
 
   AppData({
     List<ServerConfig>? servers,
@@ -1171,6 +1171,9 @@ class AppData {
     ),
     this.setupDone = false,
     this.backgroundGeneration = true,
+    this.autoCheckUpdates = true,
+    this.skippedUpdateTag = '',
+    this.lastUpdateCheck,
     this.themeMode = AppThemeMode.dark,
     this.appLanguage = AppLanguage.ru,
     this.fontFamily = AppFontFamily.system,
@@ -1231,6 +1234,15 @@ class AppData {
   /// generated, so Android does not freeze the connection.
   bool backgroundGeneration;
 
+  /// Check GitHub Releases on startup (at most once every few hours).
+  bool autoCheckUpdates;
+
+  /// Release tag the user chose to postpone.
+  String skippedUpdateTag;
+
+  /// Last successful or attempted GitHub release check.
+  DateTime? lastUpdateCheck;
+
   static LaunchSettings _defaultLaunchFromJson(Object? value) {
     final launch = value is Map
         ? LaunchSettings.fromJson(Map<String, dynamic>.from(value))
@@ -1264,6 +1276,10 @@ class AppData {
     'defaultLaunch': defaultLaunch.toJson(),
     'setupDone': setupDone,
     'backgroundGeneration': backgroundGeneration,
+    'autoCheckUpdates': autoCheckUpdates,
+    if (skippedUpdateTag.isNotEmpty) 'skippedUpdateTag': skippedUpdateTag,
+    if (lastUpdateCheck != null)
+      'lastUpdateCheck': lastUpdateCheck!.toIso8601String(),
     'themeMode': themeMode.name,
     'appLanguage': appLanguage.name,
     'fontFamily': fontFamily.name,
@@ -1314,6 +1330,11 @@ class AppData {
     defaultLaunch: _defaultLaunchFromJson(json['defaultLaunch']),
     setupDone: json['setupDone'] as bool? ?? false,
     backgroundGeneration: json['backgroundGeneration'] as bool? ?? true,
+    autoCheckUpdates: json['autoCheckUpdates'] as bool? ?? true,
+    skippedUpdateTag: json['skippedUpdateTag'] as String? ?? '',
+    lastUpdateCheck: DateTime.tryParse(
+      json['lastUpdateCheck'] as String? ?? '',
+    ),
     themeMode: AppThemeMode.values.firstWhere(
       (mode) => mode.name == json['themeMode'],
       orElse: () => AppThemeMode.dark,

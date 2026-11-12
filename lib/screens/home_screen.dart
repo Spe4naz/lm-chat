@@ -19,6 +19,7 @@ import '../widgets/message_bubble.dart';
 import '../widgets/model_picker.dart';
 import '../widgets/model_settings_sheet.dart';
 import '../widgets/params_sheet.dart';
+import '../widgets/update_banner.dart';
 import '../widgets/version_sheet.dart';
 import 'settings_screen.dart';
 
@@ -60,8 +61,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
     _voice.addListener(_onVoiceChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<AppState>().start();
+      if (mounted) {
+        context.read<AppState>().start();
+        unawaited(_maybeCheckUpdates());
+      }
     });
+  }
+
+  Future<void> _maybeCheckUpdates() async {
+    if (!mounted) return;
+    final state = context.read<AppState>();
+    if (!state.data.autoCheckUpdates) return;
+    final last = state.data.lastUpdateCheck;
+    if (last != null &&
+        DateTime.now().difference(last) < const Duration(hours: 6)) {
+      return;
+    }
+    final service = readUpdateService(context);
+    if (service == null) return;
+    await service.check();
+    if (mounted) state.markUpdateChecked();
   }
 
   /// Windows/Linux/macOS shortcuts: new chat, search, settings and stop.
@@ -865,6 +884,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               constraints: const BoxConstraints(maxWidth: 920),
               child: Column(
                 children: [
+                  const UpdateBanner(),
                   if (state.isOffline)
                     _OfflineBanner(
                       checking: state.checkingConnection,

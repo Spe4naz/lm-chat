@@ -79,7 +79,7 @@ class DiagnosticsScreen extends StatelessWidget {
                           ),
                           const _InfoRow(
                             label: 'Версия',
-                            value: 'LM Chat 1.7.1',
+                            value: 'LM Chat 1.8.0',
                           ),
                           const SizedBox(height: 4),
                           Text(

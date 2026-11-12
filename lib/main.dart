@@ -9,13 +9,23 @@ import 'models.dart';
 import 'screens/home_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'theme.dart';
+import 'updater.dart';
 import 'window_chrome.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final state = AppState();
   await state.init();
-  runApp(ChangeNotifierProvider.value(value: state, child: const LmChatApp()));
+  final updates = UpdateService();
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: state),
+        ChangeNotifierProvider.value(value: updates),
+      ],
+      child: const LmChatApp(),
+    ),
+  );
 }
 
 class LmChatApp extends StatelessWidget {

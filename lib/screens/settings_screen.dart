@@ -13,6 +13,7 @@ import '../widgets/model_settings_sheet.dart';
 import '../widgets/params_sheet.dart';
 import '../widgets/profile_sheet.dart';
 import '../widgets/prompt_library_sheet.dart';
+import '../widgets/update_banner.dart';
 import 'diagnostics_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -403,6 +404,9 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
               ),
+              const SizedBox(height: 14),
+              const _SectionHeader(title: 'Обновления'),
+              const UpdateSettingsTile(),
               if (desktop) ...[
                 const SizedBox(height: 14),
                 const _SectionHeader(title: 'Горячие клавиши'),
@@ -473,7 +477,7 @@ class SettingsScreen extends StatelessWidget {
               const SizedBox(height: 18),
               Center(
                 child: Text(
-                  'LM Chat · 1.7.1\nРаботает только в локальной сети',
+                  'LM Chat · 1.8.0\nРаботает только в локальной сети',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 12,

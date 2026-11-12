@@ -4,7 +4,7 @@
 
 #define MyAppName "LM Chat"
 #ifndef MyAppVersion
-#define MyAppVersion "1.7.1"
+#define MyAppVersion "1.8.0"
 #endif
 #define MyAppExeName "LM Chat.exe"
 
