@@ -4,31 +4,33 @@ import 'package:lm_chat/models.dart';
 
 void main() {
   group('buildMcpChatBody', () {
-    test('uses the last user turn as input and folds history into the prompt',
-        () {
-      final body = buildMcpChatBody(
-        model: 'qwen',
-        messages: [
-          {'role': 'system', 'content': 'Ты помощник.'},
-          {'role': 'user', 'content': 'Привет'},
-          {'role': 'assistant', 'content': 'Здравствуйте'},
-          {'role': 'user', 'content': 'Создай папку'},
-        ],
-        integrationId: 'lmchat/lm-computer',
-        temperature: 0.2,
-        topP: 0.9,
-        maxTokens: 512,
-        contextLength: 8192,
-      );
+    test(
+      'uses the last user turn as input and folds history into the prompt',
+      () {
+        final body = buildMcpChatBody(
+          model: 'qwen',
+          messages: [
+            {'role': 'system', 'content': 'Ты помощник.'},
+            {'role': 'user', 'content': 'Привет'},
+            {'role': 'assistant', 'content': 'Здравствуйте'},
+            {'role': 'user', 'content': 'Создай папку'},
+          ],
+          integrationId: 'lmchat/lm-computer',
+          temperature: 0.2,
+          topP: 0.9,
+          maxTokens: 512,
+          contextLength: 8192,
+        );
 
-      expect(body['input'], 'Создай папку');
-      final prompt = body['system_prompt'] as String;
-      expect(prompt, contains('Ты помощник.'));
-      expect(prompt, contains('История диалога:'));
-      expect(prompt, contains('Пользователь: Привет'));
-      expect(prompt, contains('Ассистент: Здравствуйте'));
-      expect(prompt, isNot(contains('Создай папку')));
-    });
+        expect(body['input'], 'Создай папку');
+        final prompt = body['system_prompt'] as String;
+        expect(prompt, contains('Ты помощник.'));
+        expect(prompt, contains('История диалога:'));
+        expect(prompt, contains('Пользователь: Привет'));
+        expect(prompt, contains('Ассистент: Здравствуйте'));
+        expect(prompt, isNot(contains('Создай папку')));
+      },
+    );
 
     test('requests the plugin integration and streaming', () {
       final body = buildMcpChatBody(
@@ -90,12 +92,17 @@ void main() {
 
   group('mcpChunkFromEvent', () {
     test('maps message and reasoning deltas', () {
-      final message = mcpChunkFromEvent({'type': 'message.delta', 'content': 'ok'});
+      final message = mcpChunkFromEvent({
+        'type': 'message.delta',
+        'content': 'ok',
+      });
       expect(message?.content, 'ok');
       expect(message?.reasoning, '');
 
-      final reasoning =
-          mcpChunkFromEvent({'type': 'reasoning.delta', 'content': 'думаю'});
+      final reasoning = mcpChunkFromEvent({
+        'type': 'reasoning.delta',
+        'content': 'думаю',
+      });
       expect(reasoning?.content, '');
       expect(reasoning?.reasoning, 'думаю');
     });

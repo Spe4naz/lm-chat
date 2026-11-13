@@ -1151,7 +1151,9 @@ class _ServerEditDialogState extends State<ServerEditDialog> {
     _chatViaBridge = widget.server?.chatViaBridge ?? true;
     _mcpEnabled = widget.server?.mcpEnabled ?? false;
     _mcpIntegration = TextEditingController(
-      text: widget.server?.mcpIntegrationId ?? ServerConfig.defaultMcpIntegrationId,
+      text:
+          widget.server?.mcpIntegrationId ??
+          ServerConfig.defaultMcpIntegrationId,
     );
   }
 
@@ -1472,8 +1474,10 @@ class _ServerEditDialogState extends State<ServerEditDialog> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  L10n.t('Инструменты выполняет LM Studio, приложение только '
-                      'показывает ответ.'),
+                  L10n.t(
+                    'Инструменты выполняет LM Studio, приложение только '
+                    'показывает ответ.',
+                  ),
                   style: TextStyle(
                     fontSize: 11.5,
                     color: scheme.onSurfaceVariant,
