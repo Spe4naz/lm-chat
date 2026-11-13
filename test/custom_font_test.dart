@@ -3,9 +3,37 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lm_chat/custom_font.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('font file names cannot escape the fonts directory', () {
+    expect(CustomFontService.isValidFileName('custom_1.ttf'), isTrue);
+    expect(CustomFontService.isValidFileName('My_Font-2.ttf'), isTrue);
+
+    for (final name in [
+      '',
+      '.',
+      '..',
+      '../custom_1.ttf',
+      r'..\custom_1.ttf',
+      'nested/custom_1.ttf',
+      r'nested\custom_1.ttf',
+      '/etc/passwd',
+      'custom_1.ttf.exe',
+      'custom_1',
+      'custom_1.otf',
+      '..hidden.ttf',
+      'a..b.ttf',
+    ]) {
+      expect(
+        CustomFontService.isValidFileName(name),
+        isFalse,
+        reason: 'accepted unsafe name: $name',
+      );
+    }
+  });
 
   test('FontLoader registers a runtime TTF font', () async {
     final file = File('assets/fonts/JetBrainsMono.ttf');

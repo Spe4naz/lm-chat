@@ -21,6 +21,14 @@ class CustomFontService {
   static const String folderName = 'fonts';
   static const int maxBytes = 32 * 1024 * 1024;
 
+  /// Only generated names such as `custom_1730000000000000.ttf` and older
+  /// sanitized names are accepted. Path separators, `..`, control characters
+  /// and names without the `.ttf` extension are rejected.
+  static final RegExp _fileNamePattern = RegExp(
+    r'^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.ttf$',
+    caseSensitive: false,
+  );
+
   static Future<Directory> _directory() async {
     final documents = await getApplicationDocumentsDirectory();
     final dir = Directory(
@@ -30,14 +38,37 @@ class CustomFontService {
     return dir;
   }
 
-  static String _safeFileName(String name) =>
-      name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+  static String? _safeFileName(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty || trimmed.length > 128) return null;
+    if (trimmed.contains('..') ||
+        trimmed.contains('/') ||
+        trimmed.contains(r'\')) {
+      return null;
+    }
+    return _fileNamePattern.hasMatch(trimmed) ? trimmed : null;
+  }
+
+  /// True when [name] is a plain TTF file name that stays inside `fonts/`.
+  static bool isValidFileName(String name) => _safeFileName(name) != null;
 
   static Future<File> _fileFor(String fileName) async {
-    final dir = await _directory();
-    return File(
-      '${dir.path}${Platform.pathSeparator}${_safeFileName(fileName)}',
-    );
+    final directory = await _directory();
+    final safe = _safeFileName(fileName);
+    if (safe == null) {
+      throw ArgumentError.value(fileName, 'fileName', 'Invalid font file name');
+    }
+    final directoryPath = directory.absolute.path;
+    final file = File('$directoryPath${Platform.pathSeparator}$safe');
+    if (file.parent.absolute.path != directoryPath) {
+      throw ArgumentError.value(fileName, 'fileName', 'Path escapes fonts/');
+    }
+    // Never follow a symlink planted inside the fonts directory.
+    if (await FileSystemEntity.type(file.path, followLinks: false) ==
+        FileSystemEntityType.link) {
+      throw ArgumentError.value(fileName, 'fileName', 'Font file is a symlink');
+    }
+    return file;
   }
 
   /// Writes the font, registers it and removes the previous file.
@@ -59,13 +90,11 @@ class CustomFontService {
     if (oldFileName != null &&
         oldFileName.isNotEmpty &&
         oldFileName != fileName) {
-      final old = await _fileFor(oldFileName);
-      if (await old.exists()) {
-        try {
-          await old.delete();
-        } catch (_) {
-          // A stale file is harmless; the new one is already active.
-        }
+      try {
+        final old = await _fileFor(oldFileName);
+        if (await old.exists()) await old.delete();
+      } catch (_) {
+        // An invalid or stale old name is harmless; the new font is active.
       }
     }
     return CustomFontSaveResult(family: family, fileName: fileName);
@@ -78,7 +107,12 @@ class CustomFontService {
     required String fileName,
   }) async {
     if (family.isEmpty || fileName.isEmpty) return false;
-    final file = await _fileFor(fileName);
+    final File file;
+    try {
+      file = await _fileFor(fileName);
+    } catch (_) {
+      return false;
+    }
     if (!await file.exists()) return false;
     final bytes = await file.readAsBytes();
     if (bytes.isEmpty || bytes.length > maxBytes) return false;
@@ -92,13 +126,11 @@ class CustomFontService {
 
   static Future<void> delete(String fileName) async {
     if (fileName.isEmpty) return;
-    final file = await _fileFor(fileName);
-    if (await file.exists()) {
-      try {
-        await file.delete();
-      } catch (_) {
-        // The setting is cleared either way.
-      }
+    try {
+      final file = await _fileFor(fileName);
+      if (await file.exists()) await file.delete();
+    } catch (_) {
+      // The setting is cleared either way.
     }
   }
 
