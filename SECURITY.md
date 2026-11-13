@@ -52,6 +52,13 @@ in `lib/models.dart`: public HTTP endpoints are rejected and only HTTPS is
 allowed outside the local network. API keys and bridge tokens are never sent to
 a public cleartext host.
 
+## CI checks
+
+Every push runs gitleaks, CodeQL (Python), an OSV dependency scan and an SBOM
+job (SPDX). Pull requests also run dependency review with a high-severity
+threshold. Results are uploaded to the repository's **Security → Code scanning**
+tab where the integration supports SARIF.
+
 ## Local network
 
 The app, bridge and plugin are intended for a trusted LAN. If you expose ports
