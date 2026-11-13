@@ -41,8 +41,11 @@ OpenAI-совместимый `/v1/chat/completions` молча игнориру
 модель начинает выдумывать результаты вызовов.
 
 LM Studio сам вызывает инструмент и возвращает поток событий
-(`tool_call.start`, `tool_call.arguments`, `tool_call.success`,
-`tool_call.failure`, `message.delta`, `chat.end`). Приложение складывает
+(`tool_call.start`, `tool_call.name`, `tool_call.arguments`,
+`tool_call.success`, `tool_call.failure`, `message.delta`, `chat.end`).
+В LM Studio 0.4.28 имя инструмента приходит отдельным событием
+`tool_call.name`, а `start` бывает без него; приложение поддерживает и этот
+порядок, и старый, когда имя уже есть в `start`. Приложение складывает
 `message.delta` в ответ, `chat.end` использует для статистики токенов, а
 вызовы инструментов показывает отдельной карточкой над ответом:
 

@@ -532,6 +532,7 @@ class L10n {
             'показывает ответ.':
         'LM Studio runs the tools; the app only shows the answer.',
     'Инструменты: {count}': 'Tools: {count}',
+    'Инструмент': 'Tool',
     'Аргументы': 'Arguments',
     'Результат': 'Result',
     'Инструмент выполняется…': 'Tool is running…',

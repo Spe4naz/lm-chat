@@ -50,7 +50,11 @@ enum ToolCallStatus {
 }
 
 /// Boundary events of one `tool_call.*` from `/api/v1/chat`.
-enum ToolCallEventKind { start, arguments, success, failure }
+///
+/// LM Studio 0.4.28 sends `tool_call.start` without a name and then a separate,
+/// undocumented `tool_call.name` with `tool_name`. Older builds put the name
+/// into `start` directly, so both orders have to work.
+enum ToolCallEventKind { start, name, arguments, success, failure }
 
 /// A tool call reported while an answer is streamed. LM Studio executes the
 /// tool itself, so this is informational: the app shows what the model did and
@@ -87,7 +91,7 @@ class ToolCallRecord {
     this.finishedAt,
   }) : startedAt = startedAt ?? DateTime.now();
 
-  final String name;
+  String name;
 
   /// Pretty-printed JSON arguments, or the raw string when it is not JSON.
   String arguments;
@@ -196,35 +200,50 @@ class ToolCallRecord {
 /// a preceding `start` still creates a visible record, because older LM Studio
 /// builds occasionally skip the start event.
 void applyToolCallEvent(List<ToolCallRecord> calls, ToolCallEvent event) {
-  ToolCallRecord? lastRunning() {
-    for (final call in calls.reversed) {
-      if (call.name == event.name && call.isRunning) return call;
+  ToolCallRecord? pending() {
+    // A call that already carries this name keeps its record: `arguments`,
+    // `success` and `failure` must update the row created by `start`/`name`.
+    if (event.name.isNotEmpty) {
+      for (final call in calls.reversed) {
+        if (call.isRunning && call.name == event.name) return call;
+      }
+    }
+    // Otherwise adopt the oldest placeholder created by `tool_call.start`.
+    // LM Studio 0.4.28 names the call in a separate `tool_call.name` event.
+    for (final call in calls) {
+      if (call.isRunning && call.name.isEmpty) return call;
     }
     return null;
+  }
+
+  void attach(ToolCallRecord call) {
+    if (call.name.isEmpty) call.name = event.name;
+    if (event.arguments.isNotEmpty) call.arguments = event.arguments;
   }
 
   switch (event.kind) {
     case ToolCallEventKind.start:
       calls.add(ToolCallRecord(name: event.name));
-    case ToolCallEventKind.arguments:
-      final call = lastRunning();
-      if (call == null) {
-        calls.add(ToolCallRecord(name: event.name, arguments: event.arguments));
-      } else {
-        call.arguments = event.arguments;
-      }
-    case ToolCallEventKind.success:
-      final call = lastRunning() ?? ToolCallRecord(name: event.name);
+    case ToolCallEventKind.name:
+      final call = pending() ?? ToolCallRecord(name: event.name);
       if (!calls.contains(call)) calls.add(call);
-      if (event.arguments.isNotEmpty) call.arguments = event.arguments;
+      call.name = event.name;
+    case ToolCallEventKind.arguments:
+      final call = pending() ?? ToolCallRecord(name: event.name);
+      if (!calls.contains(call)) calls.add(call);
+      attach(call);
+    case ToolCallEventKind.success:
+      final call = pending() ?? ToolCallRecord(name: event.name);
+      if (!calls.contains(call)) calls.add(call);
+      attach(call);
       call.output = event.output;
       call.error = '';
       call.status = ToolCallStatus.success;
       call.finishedAt = DateTime.now();
     case ToolCallEventKind.failure:
-      final call = lastRunning() ?? ToolCallRecord(name: event.name);
+      final call = pending() ?? ToolCallRecord(name: event.name);
       if (!calls.contains(call)) calls.add(call);
-      if (event.arguments.isNotEmpty) call.arguments = event.arguments;
+      attach(call);
       call.error = event.error;
       call.status = ToolCallStatus.failure;
       call.finishedAt = DateTime.now();
@@ -1264,6 +1283,16 @@ class ChatMessage {
         json['generationStartedAt'] as String? ?? '',
       ),
       editedAt: DateTime.tryParse(json['editedAt'] as String? ?? ''),
+    );
+    // Versions up to 1.8.5 created a placeholder for `tool_call.start`, but
+    // LM Studio names the call in a separate `tool_call.name` event that the
+    // app ignored. Those rows had no name (or were called "tool") and stayed
+    // running forever; drop them so old chats stop showing ghosts.
+    message.toolCalls.removeWhere(
+      (call) =>
+          call.isRunning &&
+          (call.name.trim().isEmpty ||
+              (call.name == 'tool' && call.arguments.trim().isEmpty)),
     );
     // A tool that was running when the app was closed never finishes: mark it
     // as interrupted instead of spinning forever in the history.

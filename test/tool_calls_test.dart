@@ -54,7 +54,83 @@ void main() {
       expect(calls.single.error, contains('Cannot find'));
     });
 
-    test('parallel calls are matched by name', () {
+    test('an unnamed start is named by tool_call.name', () {
+      final calls = <ToolCallRecord>[];
+      applyToolCallEvent(
+        calls,
+        const ToolCallEvent(kind: ToolCallEventKind.start, name: ''),
+      );
+      expect(calls, hasLength(1));
+      expect(calls.single.name, isEmpty);
+
+      applyToolCallEvent(
+        calls,
+        const ToolCallEvent(kind: ToolCallEventKind.name, name: 'fs_list'),
+      );
+      expect(calls, hasLength(1), reason: 'name must not add a second row');
+      expect(calls.single.name, 'fs_list');
+      expect(calls.single.isRunning, isTrue);
+
+      applyToolCallEvent(
+        calls,
+        const ToolCallEvent(
+          kind: ToolCallEventKind.arguments,
+          name: 'fs_list',
+          arguments: '{"path":"."}',
+        ),
+      );
+      applyToolCallEvent(
+        calls,
+        const ToolCallEvent(
+          kind: ToolCallEventKind.success,
+          name: 'fs_list',
+          output: '[{"type":"text","text":"a.txt"}]',
+        ),
+      );
+      expect(calls, hasLength(1));
+      expect(calls.single.status, ToolCallStatus.success);
+      expect(calls.single.readableOutput, 'a.txt');
+    });
+
+    test('sequential named calls leave no unnamed leftovers', () {
+      final calls = <ToolCallRecord>[];
+      void call(String name) {
+        applyToolCallEvent(
+          calls,
+          const ToolCallEvent(kind: ToolCallEventKind.start, name: ''),
+        );
+        applyToolCallEvent(
+          calls,
+          ToolCallEvent(kind: ToolCallEventKind.name, name: name),
+        );
+        applyToolCallEvent(
+          calls,
+          ToolCallEvent(
+            kind: ToolCallEventKind.arguments,
+            name: name,
+            arguments: '{"path":"site1"}',
+          ),
+        );
+        applyToolCallEvent(
+          calls,
+          ToolCallEvent(
+            kind: ToolCallEventKind.success,
+            name: name,
+            output: 'ok',
+          ),
+        );
+      }
+
+      call('fs_mkdir');
+      call('fs_write');
+
+      expect(calls, hasLength(2));
+      expect(calls.map((c) => c.name), ['fs_mkdir', 'fs_write']);
+      expect(calls.every((c) => c.status == ToolCallStatus.success), isTrue);
+      expect(calls.every((c) => !c.isRunning), isTrue);
+    });
+
+    test('parallel named calls are matched by name', () {
       final calls = <ToolCallRecord>[];
       applyToolCallEvent(
         calls,
@@ -117,6 +193,33 @@ void main() {
       expect(message.restoreLatestArchived(), isTrue);
       expect(message.toolCalls, hasLength(1));
       expect(message.toolCalls.single.name, 'fs_list');
+    });
+
+    test('loading drops the ghost rows saved by 1.8.5', () {
+      final message = ChatMessage(
+        id: 'a1',
+        role: 'assistant',
+        content: 'готово',
+        toolCalls: [
+          ToolCallRecord(name: 'tool'),
+          ToolCallRecord(name: ''),
+          ToolCallRecord(
+            name: 'fs_mkdir',
+            output: 'ok',
+            status: ToolCallStatus.success,
+            finishedAt: DateTime.now(),
+          ),
+          ToolCallRecord(name: 'fs_list'),
+        ],
+      );
+
+      final restored = ChatMessage.fromJson(message.toJson());
+      expect(restored.toolCalls.map((call) => call.name), [
+        'fs_mkdir',
+        'fs_list',
+      ]);
+      expect(restored.toolCalls.last.status, ToolCallStatus.failure);
+      expect(restored.toolCalls.last.error, 'Вызов прерван');
     });
 
     test('an answer with only a tool call is not considered empty', () {

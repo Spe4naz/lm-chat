@@ -973,12 +973,22 @@ ChatChunk? mcpChunkFromEvent(Map<String, dynamic> json) {
     case 'reasoning.delta':
       return ChatChunk('', json['content']?.toString() ?? '');
     case 'tool_call.start':
+      // LM Studio 0.4.28 leaves the name out here; `tool_call.name` follows.
       return ChatChunk(
         '',
         '',
         toolCall: ToolCallEvent(
           kind: ToolCallEventKind.start,
-          name: json['tool']?.toString() ?? 'tool',
+          name: json['tool']?.toString() ?? '',
+        ),
+      );
+    case 'tool_call.name':
+      return ChatChunk(
+        '',
+        '',
+        toolCall: ToolCallEvent(
+          kind: ToolCallEventKind.name,
+          name: json['tool_name']?.toString() ?? json['tool']?.toString() ?? '',
         ),
       );
     case 'tool_call.arguments':
@@ -987,7 +997,7 @@ ChatChunk? mcpChunkFromEvent(Map<String, dynamic> json) {
         '',
         toolCall: ToolCallEvent(
           kind: ToolCallEventKind.arguments,
-          name: json['tool']?.toString() ?? 'tool',
+          name: json['tool']?.toString() ?? json['tool_name']?.toString() ?? '',
           arguments: formatToolArguments(json['arguments']),
         ),
       );
@@ -997,7 +1007,7 @@ ChatChunk? mcpChunkFromEvent(Map<String, dynamic> json) {
         '',
         toolCall: ToolCallEvent(
           kind: ToolCallEventKind.success,
-          name: json['tool']?.toString() ?? 'tool',
+          name: json['tool']?.toString() ?? json['tool_name']?.toString() ?? '',
           arguments: formatToolArguments(json['arguments']),
           output: _clampToolText(json['output']?.toString() ?? ''),
         ),

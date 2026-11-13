@@ -108,13 +108,17 @@ void main() {
     });
 
     test('reports tool calls', () {
-      final chunk = mcpChunkFromEvent({
-        'type': 'tool_call.start',
-        'tool': 'fs_mkdir',
+      final start = mcpChunkFromEvent({'type': 'tool_call.start'});
+      expect(start?.toolCall?.kind, ToolCallEventKind.start);
+      expect(start?.toolCall?.name, '');
+      expect(start?.content, '');
+
+      final named = mcpChunkFromEvent({
+        'type': 'tool_call.name',
+        'tool_name': 'fs_mkdir',
       });
-      expect(chunk?.toolCall?.kind, ToolCallEventKind.start);
-      expect(chunk?.toolCall?.name, 'fs_mkdir');
-      expect(chunk?.content, '');
+      expect(named?.toolCall?.kind, ToolCallEventKind.name);
+      expect(named?.toolCall?.name, 'fs_mkdir');
     });
 
     test('reports tool arguments and results', () {

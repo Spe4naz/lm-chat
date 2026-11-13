@@ -948,6 +948,7 @@ class _ToolCallTileState extends State<_ToolCallTile> {
         : call.isRunning
         ? scheme.primary
         : AppColors.of(context).success;
+    final title = call.name.isEmpty ? L10n.t('Инструмент') : call.name;
     final hint = call.isFailure && call.error.isNotEmpty
         ? call.error
         : call.summary;
@@ -969,7 +970,7 @@ class _ToolCallTileState extends State<_ToolCallTile> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        call.name,
+                        title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
