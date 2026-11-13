@@ -43,7 +43,7 @@ class ChatChunk {
     this.reasoning, {
     this.usage,
     this.elapsedMs,
-    this.tool = '',
+    this.toolCall,
   });
 
   final String content;
@@ -55,9 +55,9 @@ class ChatChunk {
   /// Server-side generation time of a bridge job, in milliseconds.
   final int? elapsedMs;
 
-  /// Name of a tool the model invoked, reported by the native `/api/v1/chat`
-  /// stream. Carries no text of its own.
-  final String tool;
+  /// A tool call boundary reported by the native `/api/v1/chat` stream. Carries
+  /// no text of its own; the UI records it next to the answer.
+  final ToolCallEvent? toolCall;
 }
 
 class ModelLoadResult {
@@ -941,6 +941,27 @@ Map<String, dynamic> buildMcpChatBody({
   };
 }
 
+/// Upper bound for tool arguments/output kept in the chat file. Directory
+/// listings and command output can be large; the full text is still visible in
+/// the LM Studio log.
+const int _maxToolText = 20000;
+
+String _clampToolText(String text) => text.length <= _maxToolText
+    ? text
+    : '${text.substring(0, _maxToolText)}\n…';
+
+/// Formats `tool_call.arguments` from `/api/v1/chat` for storage and display.
+/// LM Studio sends a JSON object; older builds may send a raw string.
+String formatToolArguments(Object? value) {
+  if (value == null) return '';
+  if (value is String) return _clampToolText(value.trim());
+  try {
+    return _clampToolText(const JsonEncoder.withIndent('  ').convert(value));
+  } catch (_) {
+    return _clampToolText(value.toString());
+  }
+}
+
 /// Converts one SSE payload of `/api/v1/chat` into a [ChatChunk].
 ///
 /// Returns null for events that carry nothing to display. Server-side errors
@@ -952,11 +973,59 @@ ChatChunk? mcpChunkFromEvent(Map<String, dynamic> json) {
     case 'reasoning.delta':
       return ChatChunk('', json['content']?.toString() ?? '');
     case 'tool_call.start':
-      return ChatChunk('', '', tool: json['tool']?.toString() ?? '');
+      return ChatChunk(
+        '',
+        '',
+        toolCall: ToolCallEvent(
+          kind: ToolCallEventKind.start,
+          name: json['tool']?.toString() ?? 'tool',
+        ),
+      );
+    case 'tool_call.arguments':
+      return ChatChunk(
+        '',
+        '',
+        toolCall: ToolCallEvent(
+          kind: ToolCallEventKind.arguments,
+          name: json['tool']?.toString() ?? 'tool',
+          arguments: formatToolArguments(json['arguments']),
+        ),
+      );
+    case 'tool_call.success':
+      return ChatChunk(
+        '',
+        '',
+        toolCall: ToolCallEvent(
+          kind: ToolCallEventKind.success,
+          name: json['tool']?.toString() ?? 'tool',
+          arguments: formatToolArguments(json['arguments']),
+          output: _clampToolText(json['output']?.toString() ?? ''),
+        ),
+      );
     case 'tool_call.failure':
+      final metadata = json['metadata'];
+      final info = metadata is Map ? metadata : const {};
       final name =
-          json['tool_name']?.toString() ?? json['tool']?.toString() ?? '';
-      return ChatChunk('', '', tool: name.isEmpty ? 'tool' : '$name: ошибка');
+          info['tool_name']?.toString() ??
+          json['tool_name']?.toString() ??
+          json['tool']?.toString() ??
+          'tool';
+      final reason =
+          json['reason']?.toString() ??
+          info['reason']?.toString() ??
+          'Инструмент не выполнен';
+      return ChatChunk(
+        '',
+        '',
+        toolCall: ToolCallEvent(
+          kind: ToolCallEventKind.failure,
+          name: name,
+          arguments: formatToolArguments(
+            info['arguments'] ?? json['arguments'],
+          ),
+          error: _clampToolText(reason),
+        ),
+      );
     case 'error':
       final error = json['error'];
       throw ApiException(

@@ -36,6 +36,201 @@ enum AppFontFamily {
 /// How the model is asked to format its answer.
 enum ResponseFormatMode { text, json, jsonSchema, grammar }
 
+/// State of a tool the model invoked through LM Studio.
+enum ToolCallStatus {
+  running,
+  success,
+  failure;
+
+  static ToolCallStatus fromName(String? name) => switch (name) {
+    'success' => ToolCallStatus.success,
+    'failure' => ToolCallStatus.failure,
+    _ => ToolCallStatus.running,
+  };
+}
+
+/// Boundary events of one `tool_call.*` from `/api/v1/chat`.
+enum ToolCallEventKind { start, arguments, success, failure }
+
+/// A tool call reported while an answer is streamed. LM Studio executes the
+/// tool itself, so this is informational: the app shows what the model did and
+/// never runs anything.
+class ToolCallEvent {
+  const ToolCallEvent({
+    required this.kind,
+    required this.name,
+    this.arguments = '',
+    this.output = '',
+    this.error = '',
+  });
+
+  final ToolCallEventKind kind;
+  final String name;
+  final String arguments;
+  final String output;
+  final String error;
+
+  bool get opensCall => kind == ToolCallEventKind.start;
+}
+
+/// One tool invocation, kept with the answer so the history shows what the
+/// model did (created folders, read files, ran commands…) and not just the
+/// reply text.
+class ToolCallRecord {
+  ToolCallRecord({
+    required this.name,
+    this.arguments = '',
+    this.output = '',
+    this.error = '',
+    this.status = ToolCallStatus.running,
+    DateTime? startedAt,
+    this.finishedAt,
+  }) : startedAt = startedAt ?? DateTime.now();
+
+  final String name;
+
+  /// Pretty-printed JSON arguments, or the raw string when it is not JSON.
+  String arguments;
+  String output;
+  String error;
+  ToolCallStatus status;
+  final DateTime startedAt;
+  DateTime? finishedAt;
+
+  bool get isRunning => status == ToolCallStatus.running;
+
+  bool get isFailure => status == ToolCallStatus.failure;
+
+  /// Short argument value used as a one-line hint in the collapsed row.
+  String get summary {
+    final source = arguments.trim();
+    if (source.isEmpty) return '';
+    try {
+      final value = jsonDecode(source);
+      if (value is Map) {
+        for (final entry in value.entries) {
+          final item = entry.value;
+          if (item is String || item is num || item is bool) {
+            return _shorten('${entry.key}: $item');
+          }
+          if (item is List && item.isNotEmpty) {
+            return _shorten('${entry.key}: ${item.first}');
+          }
+        }
+      } else if (value is String) {
+        return _shorten(value);
+      }
+    } catch (_) {
+      // Not JSON: fall through and show the raw text.
+    }
+    return _shorten(source.replaceAll(RegExp(r'\s+'), ' '));
+  }
+
+  static String _shorten(String text) {
+    final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return flat.length <= 90 ? flat : '${flat.substring(0, 90)}…';
+  }
+
+  /// Milliseconds between the start and the result, or null while running.
+  int? get durationMs {
+    final end = finishedAt;
+    if (end == null) return null;
+    final millis = end.difference(startedAt).inMilliseconds;
+    return millis < 0 ? 0 : millis;
+  }
+
+  /// Human-readable result: MCP wraps text in a JSON envelope like
+  /// `[{"type":"text","text":"…"}]`, which is noisy to show verbatim.
+  String get readableOutput {
+    final source = output.trim();
+    if (source.isEmpty) return '';
+    try {
+      final texts = <String>[];
+      void collect(Object? item) {
+        if (item is String) {
+          texts.add(item);
+        } else if (item is List) {
+          item.forEach(collect);
+        } else if (item is Map) {
+          final text = item['text'] ?? item['content'];
+          if (text is String) texts.add(text);
+        }
+      }
+
+      collect(jsonDecode(source));
+      if (texts.isNotEmpty) return texts.join('\n');
+    } catch (_) {
+      // Not JSON: show the raw output.
+    }
+    return source;
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    if (arguments.isNotEmpty) 'arguments': arguments,
+    if (output.isNotEmpty) 'output': output,
+    if (error.isNotEmpty) 'error': error,
+    'status': status.name,
+    'startedAt': startedAt.toIso8601String(),
+    if (finishedAt != null) 'finishedAt': finishedAt!.toIso8601String(),
+  };
+
+  factory ToolCallRecord.fromJson(Map<String, dynamic> json) {
+    final status = json['status'] as String?;
+    return ToolCallRecord(
+      name: json['name'] as String? ?? 'tool',
+      arguments: json['arguments'] as String? ?? '',
+      output: json['output'] as String? ?? '',
+      error: json['error'] as String? ?? '',
+      // Records written before `status` existed were finished, never running.
+      status: status == null
+          ? ToolCallStatus.success
+          : ToolCallStatus.fromName(status),
+      startedAt: DateTime.tryParse(json['startedAt'] as String? ?? ''),
+      finishedAt: DateTime.tryParse(json['finishedAt'] as String? ?? ''),
+    );
+  }
+}
+
+/// Folds one streamed [event] into [calls]. A `success`/`failure` event without
+/// a preceding `start` still creates a visible record, because older LM Studio
+/// builds occasionally skip the start event.
+void applyToolCallEvent(List<ToolCallRecord> calls, ToolCallEvent event) {
+  ToolCallRecord? lastRunning() {
+    for (final call in calls.reversed) {
+      if (call.name == event.name && call.isRunning) return call;
+    }
+    return null;
+  }
+
+  switch (event.kind) {
+    case ToolCallEventKind.start:
+      calls.add(ToolCallRecord(name: event.name));
+    case ToolCallEventKind.arguments:
+      final call = lastRunning();
+      if (call == null) {
+        calls.add(ToolCallRecord(name: event.name, arguments: event.arguments));
+      } else {
+        call.arguments = event.arguments;
+      }
+    case ToolCallEventKind.success:
+      final call = lastRunning() ?? ToolCallRecord(name: event.name);
+      if (!calls.contains(call)) calls.add(call);
+      if (event.arguments.isNotEmpty) call.arguments = event.arguments;
+      call.output = event.output;
+      call.error = '';
+      call.status = ToolCallStatus.success;
+      call.finishedAt = DateTime.now();
+    case ToolCallEventKind.failure:
+      final call = lastRunning() ?? ToolCallRecord(name: event.name);
+      if (!calls.contains(call)) calls.add(call);
+      if (event.arguments.isNotEmpty) call.arguments = event.arguments;
+      call.error = event.error;
+      call.status = ToolCallStatus.failure;
+      call.finishedAt = DateTime.now();
+  }
+}
+
 String titleFromPrompt(String text, {int maxLength = 48}) {
   final runes = text.runes.toList(growable: false);
   if (runes.length <= maxLength) return text;
@@ -597,8 +792,10 @@ class ChatMessageVersion {
     this.firstTokenMs,
     this.tokensEstimated = false,
     this.editedAt,
+    List<ToolCallRecord>? toolCalls,
     DateTime? createdAt,
-  }) : createdAt = createdAt ?? DateTime.now();
+  }) : createdAt = createdAt ?? DateTime.now(),
+       toolCalls = toolCalls ?? [];
 
   final String id;
   final String content;
@@ -610,6 +807,9 @@ class ChatMessageVersion {
   final int? totalTokens;
   final int? generationMs;
 
+  /// Tool calls that produced this answer, in the order the model made them.
+  final List<ToolCallRecord> toolCalls;
+
   /// Time to first token, in milliseconds.
   final int? firstTokenMs;
 
@@ -620,7 +820,8 @@ class ChatMessageVersion {
   final DateTime? editedAt;
   final DateTime createdAt;
 
-  bool get isEmpty => content.trim().isEmpty && reasoning.trim().isEmpty;
+  bool get isEmpty =>
+      content.trim().isEmpty && reasoning.trim().isEmpty && toolCalls.isEmpty;
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -634,6 +835,8 @@ class ChatMessageVersion {
     if (generationMs != null) 'generationMs': generationMs,
     if (firstTokenMs != null) 'firstTokenMs': firstTokenMs,
     if (tokensEstimated) 'tokensEstimated': true,
+    if (toolCalls.isNotEmpty)
+      'toolCalls': toolCalls.map((call) => call.toJson()).toList(),
     if (editedAt != null) 'editedAt': editedAt!.toIso8601String(),
     'createdAt': createdAt.toIso8601String(),
   };
@@ -651,6 +854,12 @@ class ChatMessageVersion {
         generationMs: (json['generationMs'] as num?)?.toInt(),
         firstTokenMs: (json['firstTokenMs'] as num?)?.toInt(),
         tokensEstimated: json['tokensEstimated'] as bool? ?? false,
+        toolCalls:
+            (json['toolCalls'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .map(ToolCallRecord.fromJson)
+                .toList() ??
+            [],
         editedAt: DateTime.tryParse(json['editedAt'] as String? ?? ''),
         createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
       );
@@ -720,8 +929,10 @@ class ChatMessage {
     this.generationStartedAt,
     this.editedAt,
     this.notice,
+    List<ToolCallRecord>? toolCalls,
   }) : versions = versions ?? [],
        attachments = attachments ?? [],
+       toolCalls = toolCalls ?? [],
        createdAt = createdAt ?? DateTime.now();
 
   final String id;
@@ -778,6 +989,10 @@ class ChatMessage {
   /// warning is still visible after a restart.
   String? notice;
 
+  /// Tools the model invoked while producing the current answer. Persisted so
+  /// the chat shows what happened to files and commands, not only the text.
+  final List<ToolCallRecord> toolCalls;
+
   /// Transient flags: never persisted.
   bool streaming = false;
   String? status;
@@ -805,6 +1020,10 @@ class ChatMessage {
   String get displayContent => _displayedVersion?.content ?? content;
 
   String get displayReasoning => _displayedVersion?.reasoning ?? reasoning;
+
+  /// Tool calls of the answer currently on screen.
+  List<ToolCallRecord> get displayToolCalls =>
+      _displayedVersion?.toolCalls ?? toolCalls;
 
   String? get displayError => viewingLatest ? error : _displayedVersion?.error;
 
@@ -868,6 +1087,7 @@ class ChatMessage {
         firstTokenMs: firstTokenMs,
         tokensEstimated: tokensEstimated,
         editedAt: editedAt,
+        toolCalls: [...toolCalls],
         createdAt: createdAt,
       );
     }
@@ -889,7 +1109,11 @@ class ChatMessage {
   /// Moves the current answer into [versions] and clears the fields for a new
   /// generation. Returns null when there is nothing worth keeping.
   ChatMessageVersion? archiveCurrent({String? model}) {
-    if (content.trim().isEmpty && reasoning.trim().isEmpty) return null;
+    if (content.trim().isEmpty &&
+        reasoning.trim().isEmpty &&
+        toolCalls.isEmpty) {
+      return null;
+    }
     final version = ChatMessageVersion(
       id: newId(),
       content: content,
@@ -903,6 +1127,7 @@ class ChatMessage {
       firstTokenMs: firstTokenMs,
       tokensEstimated: tokensEstimated,
       editedAt: editedAt,
+      toolCalls: [...toolCalls],
       // Keep the time the answer was actually produced. Falling back to
       // `createdAt` covers messages restored from an older file.
       createdAt: generationStartedAt ?? createdAt,
@@ -910,6 +1135,7 @@ class ChatMessage {
     versions.add(version);
     content = '';
     reasoning = '';
+    toolCalls.clear();
     error = null;
     jobId = null;
     jobServerId = null;
@@ -933,6 +1159,9 @@ class ChatMessage {
     final last = versions.removeLast();
     content = last.content;
     reasoning = last.reasoning;
+    toolCalls
+      ..clear()
+      ..addAll(last.toolCalls);
     error = last.error;
     model = last.model;
     promptTokens = last.promptTokens;
@@ -968,6 +1197,8 @@ class ChatMessage {
     if (model.isNotEmpty) 'model': model,
     if (attachments.isNotEmpty)
       'attachments': attachments.map((a) => a.toJson()).toList(),
+    if (toolCalls.isNotEmpty)
+      'toolCalls': toolCalls.map((call) => call.toJson()).toList(),
     'createdAt': createdAt.toIso8601String(),
     if (error != null) 'error': error,
     if (notice != null && notice!.isNotEmpty) 'notice': notice,
@@ -997,7 +1228,7 @@ class ChatMessage {
         [];
     var active = (json['activeVersion'] as num?)?.toInt() ?? 0;
     if (active < 0 || active > versions.length) active = 0;
-    return ChatMessage(
+    final message = ChatMessage(
       id: json['id'] as String? ?? newId(),
       role: json['role'] as String? ?? 'assistant',
       content: json['content'] as String? ?? '',
@@ -1007,6 +1238,12 @@ class ChatMessage {
           (json['attachments'] as List?)
               ?.whereType<Map<String, dynamic>>()
               .map(ChatAttachment.fromJson)
+              .toList() ??
+          [],
+      toolCalls:
+          (json['toolCalls'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .map(ToolCallRecord.fromJson)
               .toList() ??
           [],
       createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
@@ -1028,6 +1265,15 @@ class ChatMessage {
       ),
       editedAt: DateTime.tryParse(json['editedAt'] as String? ?? ''),
     );
+    // A tool that was running when the app was closed never finishes: mark it
+    // as interrupted instead of spinning forever in the history.
+    for (final call in message.toolCalls) {
+      if (!call.isRunning) continue;
+      call.status = ToolCallStatus.failure;
+      call.error = 'Вызов прерван';
+      call.finishedAt = DateTime.now();
+    }
+    return message;
   }
 }
 

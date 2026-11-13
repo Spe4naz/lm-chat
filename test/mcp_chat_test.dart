@@ -112,8 +112,37 @@ void main() {
         'type': 'tool_call.start',
         'tool': 'fs_mkdir',
       });
-      expect(chunk?.tool, 'fs_mkdir');
+      expect(chunk?.toolCall?.kind, ToolCallEventKind.start);
+      expect(chunk?.toolCall?.name, 'fs_mkdir');
       expect(chunk?.content, '');
+    });
+
+    test('reports tool arguments and results', () {
+      final args = mcpChunkFromEvent({
+        'type': 'tool_call.arguments',
+        'tool': 'fs_mkdir',
+        'arguments': {'path': 'lmchat-test'},
+      });
+      expect(args?.toolCall?.kind, ToolCallEventKind.arguments);
+      expect(args?.toolCall?.arguments, contains('lmchat-test'));
+
+      final done = mcpChunkFromEvent({
+        'type': 'tool_call.success',
+        'tool': 'fs_mkdir',
+        'arguments': {'path': 'lmchat-test'},
+        'output': '[{"type":"text","text":"created"}]',
+      });
+      expect(done?.toolCall?.kind, ToolCallEventKind.success);
+      expect(done?.toolCall?.output, contains('created'));
+
+      final failed = mcpChunkFromEvent({
+        'type': 'tool_call.failure',
+        'reason': 'Cannot find tool with name open_browser.',
+        'metadata': {'type': 'invalid_name', 'tool_name': 'open_browser'},
+      });
+      expect(failed?.toolCall?.kind, ToolCallEventKind.failure);
+      expect(failed?.toolCall?.name, 'open_browser');
+      expect(failed?.toolCall?.error, contains('Cannot find tool'));
     });
 
     test('converts chat.end stats into usage', () {

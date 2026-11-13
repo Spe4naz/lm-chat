@@ -192,6 +192,11 @@ class MessageBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _AssistantHeader(message: message),
+          if (message.displayToolCalls.isNotEmpty)
+            _ToolCallsPanel(
+              calls: message.displayToolCalls,
+              live: message.streaming,
+            ),
           if (message.displayReasoning.trim().isNotEmpty)
             _ReasoningPanel(text: message.displayReasoning),
           if (hasContent)
@@ -858,6 +863,275 @@ class _LiveStats extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ToolCallsPanel extends StatelessWidget {
+  const _ToolCallsPanel({required this.calls, required this.live});
+
+  final List<ToolCallRecord> calls;
+  final bool live;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final running = calls.any((call) => call.isRunning);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: AppColors.of(context).reasoning,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 2),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.extension_rounded,
+                  size: 15,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  L10n.tf('Инструменты: {count}', {'count': '${calls.length}'}),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                if (live && running) ...[
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 11,
+                    height: 11,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.6,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          for (final call in calls)
+            _ToolCallTile(key: ObjectKey(call), call: call),
+          const SizedBox(height: 3),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolCallTile extends StatefulWidget {
+  const _ToolCallTile({super.key, required this.call});
+
+  final ToolCallRecord call;
+
+  @override
+  State<_ToolCallTile> createState() => _ToolCallTileState();
+}
+
+class _ToolCallTileState extends State<_ToolCallTile> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final call = widget.call;
+    final statusColor = call.isFailure
+        ? scheme.error
+        : call.isRunning
+        ? scheme.primary
+        : AppColors.of(context).success;
+    final hint = call.isFailure && call.error.isNotEmpty
+        ? call.error
+        : call.summary;
+    final duration = call.durationMs;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _open = !_open),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+            child: Row(
+              children: [
+                _ToolStatusIcon(call: call, color: statusColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        call.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: 'JetBrainsMono',
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: scheme.onSurface,
+                        ),
+                      ),
+                      if (hint.isNotEmpty)
+                        Text(
+                          hint,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            height: 1.3,
+                            color: call.isFailure
+                                ? scheme.error
+                                : scheme.onSurfaceVariant,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                if (duration != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Text(
+                      _toolDurationLabel(duration),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                Icon(
+                  _open
+                      ? Icons.keyboard_arrow_up_rounded
+                      : Icons.keyboard_arrow_down_rounded,
+                  size: 18,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_open)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (call.arguments.trim().isNotEmpty)
+                  _ToolDetail(label: L10n.t('Аргументы'), text: call.arguments),
+                if (call.isFailure && call.error.isNotEmpty)
+                  _ToolDetail(
+                    label: L10n.t('Ошибка'),
+                    text: call.error,
+                    color: scheme.error,
+                  ),
+                if (!call.isFailure && call.readableOutput.isNotEmpty)
+                  _ToolDetail(
+                    label: L10n.t('Результат'),
+                    text: call.readableOutput,
+                  ),
+                if (call.isRunning)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      L10n.t('Инструмент выполняется…'),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ToolStatusIcon extends StatelessWidget {
+  const _ToolStatusIcon({required this.call, required this.color});
+
+  final ToolCallRecord call;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    if (call.isRunning) {
+      return SizedBox(
+        width: 14,
+        height: 14,
+        child: CircularProgressIndicator(strokeWidth: 1.8, color: color),
+      );
+    }
+    return Icon(
+      call.isFailure ? Icons.error_outline_rounded : Icons.check_circle_rounded,
+      size: 16,
+      color: color,
+    );
+  }
+}
+
+class _ToolDetail extends StatelessWidget {
+  const _ToolDetail({required this.label, required this.text, this.color});
+
+  final String label;
+  final String text;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final shown = text.length > 4000 ? '${text.substring(0, 4000)}\n…' : text;
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.of(context).code,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10.5,
+              letterSpacing: 0.3,
+              fontWeight: FontWeight.w600,
+              color: color ?? scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 3),
+          SelectableText(
+            shown,
+            style: TextStyle(
+              fontFamily: 'JetBrainsMono',
+              fontSize: 12,
+              height: 1.45,
+              color: color ?? scheme.onSurface,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _toolDurationLabel(int millis) {
+  if (millis < 1000) return '$millis мс';
+  final seconds = millis / 1000;
+  if (seconds < 60) return '${seconds.toStringAsFixed(1)} с';
+  final minutes = (seconds / 60).floor();
+  final rest = (seconds % 60).round();
+  return '$minutes:${rest.toString().padLeft(2, '0')}';
 }
 
 class _ReasoningPanel extends StatefulWidget {

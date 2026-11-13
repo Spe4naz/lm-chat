@@ -1497,6 +1497,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final generationBefore = placeholder.generationMs;
     final firstTokenBefore = placeholder.firstTokenMs;
     final estimatedBefore = placeholder.tokensEstimated;
+    final toolsBefore = placeholder.toolCalls.length;
     if (isGenerating(chat)) return;
     _lastModel = chat.model;
     placeholder.model = chat.model;
@@ -1556,6 +1557,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       await for (final chunk in stream) {
         if (chunk.usage != null) _applyUsage(placeholder, chunk.usage!);
         if (chunk.elapsedMs != null) serverElapsedMs = chunk.elapsedMs;
+        final toolCall = chunk.toolCall;
+        if (toolCall != null) {
+          applyToolCallEvent(placeholder.toolCalls, toolCall);
+          _scheduleSave();
+        }
         if (placeholder.firstTokenMs == null &&
             (chunk.content.isNotEmpty || chunk.reasoning.isNotEmpty)) {
           placeholder.firstTokenMs = generation.elapsedMilliseconds;
@@ -1592,7 +1598,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           ? placeholder.reasoning.substring(reasoningBefore.length)
           : '';
       final producedNothing =
-          addedContent.trim().isEmpty && addedReasoning.trim().isEmpty;
+          addedContent.trim().isEmpty &&
+          addedReasoning.trim().isEmpty &&
+          placeholder.toolCalls.length == toolsBefore;
       if (placeholder.error == null && producedNothing) {
         if (isContinuation) {
           statusMessage = aborted

@@ -531,6 +531,10 @@ class L10n {
     'Инструменты выполняет LM Studio, приложение только '
             'показывает ответ.':
         'LM Studio runs the tools; the app only shows the answer.',
+    'Инструменты: {count}': 'Tools: {count}',
+    'Аргументы': 'Arguments',
+    'Результат': 'Result',
+    'Инструмент выполняется…': 'Tool is running…',
 
     // ------------------------------------------------------------ model dialog
     'Запуск по умолчанию': 'Default launch',
