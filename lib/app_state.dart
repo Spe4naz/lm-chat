@@ -1314,6 +1314,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return;
     }
+    final security = server.generationSecurityError;
+    if (security != null) {
+      statusMessage = security;
+      notifyListeners();
+      return;
+    }
     if (chat.archived) chat.archived = false;
 
     chat.messages.add(
@@ -1460,6 +1466,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (formatError != null) {
       placeholder.streaming = false;
       placeholder.error = L10n.t(formatError);
+      chat.updatedAt = DateTime.now();
+      _scheduleSave();
+      notifyListeners();
+      return;
+    }
+    final security = server.generationSecurityError;
+    if (security != null) {
+      placeholder.streaming = false;
+      placeholder.error = security;
       chat.updatedAt = DateTime.now();
       _scheduleSave();
       notifyListeners();
@@ -1890,7 +1905,19 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       final servers = <ServerConfig>[];
       for (final item in rawServers) {
         if (item is Map) {
-          servers.add(ServerConfig.fromJson(Map<String, dynamic>.from(item)));
+          final server = ServerConfig.fromJson(Map<String, dynamic>.from(item));
+          // Exports never contain credentials. Drop hand-edited tokens and
+          // refuse cleartext public addresses before they can become active.
+          server.apiKey = '';
+          server.bridgeToken = '';
+          if (server.generationSecurityError != null) {
+            AppLog.instance.warning(
+              'Пропущен небезопасный сервер из импорта',
+              detail: server.baseUrl,
+            );
+            continue;
+          }
+          servers.add(server);
         }
       }
       final chats = <ChatSession>[];
@@ -1963,7 +1990,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
       final serverMap = <String, String>{};
       final newServers = <ServerConfig>[];
-      for (final server in preview.servers) {
+      for (final incoming in preview.servers) {
+        final server = incoming.clone()
+          ..apiKey = ''
+          ..bridgeToken = '';
+        if (server.generationSecurityError != null) continue;
         ServerConfig? existing;
         for (final current in data.servers) {
           if (current.id == server.id ||
@@ -2482,6 +2513,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       var secretsChanged = false;
       if (options.servers) {
         for (final incoming in profile.servers) {
+          if (incoming.generationSecurityError != null) continue;
           ServerConfig? match;
           for (final current in data.servers) {
             if (current.id == incoming.id) {

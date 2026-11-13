@@ -116,6 +116,18 @@ class LmClient {
 
   http.Client get _http => _client ??= http.Client();
 
+  /// Refuses cleartext API requests to public hosts before any socket is opened.
+  void _ensureBaseSafe(ServerConfig server) {
+    final error = server.baseSecurityError;
+    if (error != null) throw ApiException(error);
+  }
+
+  /// Refuses cleartext bridge requests to public hosts.
+  void _ensureBridgeSafe(ServerConfig server) {
+    final error = server.bridgeSecurityError;
+    if (error != null) throw ApiException('Мост: $error');
+  }
+
   bool _cancelled = false;
   String? _activeJob;
   ServerConfig? _activeJobServer;
@@ -170,6 +182,7 @@ class LmClient {
   }
 
   Future<BridgeHealth> bridgeHealth(ServerConfig server) async {
+    _ensureBridgeSafe(server);
     final response = await _http
         .get(server.bridgeUri('health'))
         .timeout(const Duration(seconds: 10));
@@ -201,6 +214,7 @@ class LmClient {
     int? ttlSeconds,
     double? gpuRatio,
   }) async {
+    _ensureBridgeSafe(server);
     final body = <String, dynamic>{
       'model': model,
       if (contextLength != null && contextLength > 0)
@@ -230,6 +244,7 @@ class LmClient {
     String? model,
     bool all = false,
   }) async {
+    _ensureBridgeSafe(server);
     final body = all ? {'all': true} : {'model': model ?? ''};
     final response = await _http
         .post(
@@ -251,6 +266,7 @@ class LmClient {
     int? contextLength,
     double? gpuRatio,
   }) async {
+    _ensureBridgeSafe(server);
     final body = <String, dynamic>{
       'model': model,
       if (contextLength != null && contextLength > 0)
@@ -306,6 +322,7 @@ class LmClient {
   /// `/api/v1/models` endpoint and falls back to OpenAI-compatible `/v1/models`
   /// on older LM Studio builds.
   Future<List<LmModelInfo>> fetchModelsInfo(ServerConfig server) async {
+    _ensureBaseSafe(server);
     final response = await _http
         .get(server.apiV1('models'), headers: _headers(server))
         .timeout(const Duration(seconds: 20));
@@ -361,6 +378,7 @@ class LmClient {
     bool? offloadKvCache,
     double? gpuRatio,
   }) async {
+    _ensureBaseSafe(server);
     final body = <String, dynamic>{
       'model': model,
       if (contextLength != null && contextLength > 0)
@@ -452,6 +470,7 @@ class LmClient {
   }
 
   Future<void> unloadModel(ServerConfig server, String instanceId) async {
+    _ensureBaseSafe(server);
     final response = await _http
         .post(
           server.apiV1('models/unload'),
@@ -483,6 +502,7 @@ class LmClient {
     void Function(String job)? onJob,
     void Function(int next)? onSeq,
   }) async* {
+    _ensureBridgeSafe(server);
     _cancelled = false;
     final job = jobId ?? newId();
     final response = await _http
@@ -528,6 +548,7 @@ class LmClient {
     int since = 0,
     void Function(int next)? onSeq,
   }) async* {
+    _ensureBridgeSafe(server);
     _cancelled = false;
     _activeJob = job;
     _activeJobServer = server;
@@ -615,6 +636,7 @@ class LmClient {
   }
 
   Future<void> _cancelBridgeJob(ServerConfig server, String job) async {
+    _ensureBridgeSafe(server);
     await _http
         .post(
           server.bridgeUri('chat/$job/cancel'),
@@ -636,6 +658,7 @@ class LmClient {
     ResponseFormat? format,
     int? ttlSeconds,
   }) async* {
+    _ensureBaseSafe(server);
     Future<http.StreamedResponse> send({required bool withUsage}) {
       final request = http.Request('POST', server.chatUri);
       _headers(server).forEach((key, value) => request.headers[key] = value);

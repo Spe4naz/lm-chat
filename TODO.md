@@ -1,6 +1,6 @@
 # TODO
 
-Текущая версия: **1.8.0**, плагин **0.1.3**.
+Текущая версия: **1.8.1**, плагин **0.1.4**.
 
 ## Аудит 2026-11-13
 
@@ -10,45 +10,38 @@
 Результаты проверок:
 
 - `flutter analyze` — без замечаний;
-- `flutter test` — 160/160;
-- плагин: `npm run build`, `npm test` — 32/32;
+- `flutter test` — 165/165;
+- плагин: `npm run build`, `npm test` — 34/34;
 - Python: `pytest tools/test_lms_gpu_bridge.py` — 17/17;
 - `npm audit`: 5 уязвимостей (2 critical, 2 high, 1 moderate), в основном
   dev-зависимости `vitest`/`tinypool`; `zod` проходит и в production-цепочку.
 
-Критические пункты ниже нужно закрыть до следующего публичного релиза.
+P0 закрыты в исходниках. Чтобы они попали на устройства, нужен новый релиз
+приложения; плагин обновляется через `git pull && ./install.sh`.
 
 Пути `src/core/...`, `install.sh`, `start.sh`, `stop.sh` и `prompts/...`
 относятся к отдельному репозиторию `tools/lm-computer-plugin`.
 
 ### P0 — безопасность, исправить первым
 
-- [ ] **Обход workspace через dangling symlink.**
-      `src/core/paths.ts:73` (`realpathNearest`) считает dangling-ссылку
-      безопасной, потому что её цель ещё не существует. Дальше `fs_append`
-      (`src/core/files.ts:122`) идёт по ссылке, а `fs_write`/`fs_move` создают
-      родительские каталоги через `fs.mkdir` — в итоге файл можно создать или
-      дописать вне workspace. Исправить: проверять `lstat` каждого компонента,
-      отклонять symlink в конечном компоненте и dangling-ссылки; для записи
-      использовать `O_NOFOLLOW` либо `realpath` после создания. Тесты:
-      `link -> /home/user/.ssh/authorized_keys` (не существует) + `fs_append`;
-      `link -> /home/user/newdir` + `fs_write link/file`.
+- [x] **Обход workspace через dangling symlink.** Исправлено: `PathGuard`
+      проверяет `lstat` каждого несуществующего компонента и отклоняет
+      dangling-ссылки, а `fs_append` на Unix открывает файл с `O_NOFOLLOW`.
+      `src/core/paths.ts:73`, `src/core/files.ts:122`. Тесты:
+      `test/paths.test.ts` (dangling file и dangling directory).
 
-- [ ] **Сетевой слой приложения не проверяет `securityError`.**
-      Проверка есть только в UI (`welcome_screen.dart:41`,
-      `settings_screen.dart:1216`), но не в `LmClient`/`AppState`. Импорт
-      истории или профиля может добавить сервер с `http://public-host`, после
-      чего `send()` (`lib/app_state.dart:1288`) отправит туда сообщения и
-      Bearer-токен. Исправить: проверять `securityError` перед каждым запросом
-      в `LmClient`, отклонять небезопасные серверы при импорте и не принимать
-      `apiKey`/`bridgeToken` из импортируемых файлов.
+- [x] **Сетевой слой приложения не проверял `securityError`.** Исправлено:
+      `LmClient` проверяет base/bridge до сокета (`lib/api.dart`), `send()` и
+      `_generate()` блокируют небезопасный сервер (`lib/app_state.dart`),
+      импорт истории/профиля вырезает токены и пропускает небезопасные серверы
+      (`lib/app_state.dart`, `lib/profile.dart`). Тесты:
+      `test/security_test.dart`.
 
-- [ ] **Bridge URL не валидируется, а `bridgeUrlForBase` всегда даёт `http`.**
-      `lib/models.dart:109` строит `http://host:1235` даже для `https://`
-      сервера; `securityError` (`lib/models.dart:156`) проверяет только
-      `baseUrl`. В результате bridge-токен и чат могут уйти по cleartext на
-      публичный хост. Исправить: валидировать bridge так же, как base, и
-      наследовать схему/хост либо запрещать bridge для небезопасных адресов.
+- [x] **Bridge URL не валидировался, а `bridgeUrlForBase` всегда давал
+      `http`.** Исправлено: `ServerConfig.bridgeSecurityError` проверяет мост,
+      `bridgeUrlForBase` не строит адрес для публичного хоста, а клиент
+      раздельно проверяет base и bridge (`lib/models.dart`, `lib/api.dart`).
+      Тесты: `test/security_test.dart`.
 
 ### P1 — высокий приоритет
 

@@ -105,14 +105,24 @@ class ServerConfig {
 
   /// The bridge runs on the same machine as LM Studio, so its address is the
   /// server host with [defaultBridgePort]. Returns an empty string when
-  /// [baseUrl] has no usable host.
+  /// [baseUrl] has no usable host or points to a public network: the bridge is
+  /// plain HTTP, so a public address would leak its token.
   static String bridgeUrlForBase(String baseUrl) {
-    var value = baseUrl.trim();
-    if (value.isEmpty) return '';
-    if (!value.contains('://')) value = 'http://$value';
-    final host = Uri.tryParse(value)?.host;
+    final value = _normalizedUrl(baseUrl);
+    if (value == null) return '';
+    final uri = Uri.tryParse(value);
+    final host = uri?.host;
     if (host == null || host.isEmpty) return '';
+    final scheme = uri!.scheme.isEmpty ? 'http' : uri.scheme;
+    if (!isPrivateUrl(Uri(scheme: scheme, host: host).toString())) return '';
     return Uri(scheme: 'http', host: host, port: defaultBridgePort).toString();
+  }
+
+  static String? _normalizedUrl(String value) {
+    var normalized = value.trim();
+    if (normalized.isEmpty) return null;
+    if (!normalized.contains('://')) normalized = 'http://$normalized';
+    return normalized;
   }
 
   bool get hasBridge => normalizedBridge.isNotEmpty;
@@ -121,8 +131,13 @@ class ServerConfig {
 
   /// True for loopback, RFC1918, link-local, CGNAT/Tailscale and `.local`
   /// names. Public HTTP endpoints are rejected by [securityError].
-  bool get isPrivateHost {
-    final host = Uri.tryParse(normalizedBase)?.host.toLowerCase();
+  bool get isPrivateHost => isPrivateUrl(normalizedBase);
+
+  /// True when [value] points to a loopback, private or local-network host.
+  static bool isPrivateUrl(String value) {
+    final normalized = _normalizedUrl(value);
+    if (normalized == null) return false;
+    final host = Uri.tryParse(normalized)?.host.toLowerCase();
     if (host == null || host.isEmpty) return false;
     if (host == 'localhost' || host.endsWith('.local')) return true;
     final address = InternetAddress.tryParse(host);
@@ -152,11 +167,39 @@ class ServerConfig {
     return false;
   }
 
-  /// Null when the address is safe, otherwise a user-facing explanation.
-  String? get securityError {
-    if (!isCleartext || isPrivateHost) return null;
+  static String? _securityErrorFor(String value) {
+    final normalized = _normalizedUrl(value);
+    if (normalized == null) return null;
+    if (!normalized.toLowerCase().startsWith('http://')) return null;
+    if (isPrivateUrl(normalized)) return null;
     return 'HTTP разрешён только для локальной сети. '
         'Для внешнего сервера используйте HTTPS или Tailscale.';
+  }
+
+  /// Null when both the API and bridge addresses are safe, otherwise a
+  /// user-facing explanation.
+  String? get securityError {
+    final base = baseSecurityError;
+    if (base != null) return base;
+    final bridge = bridgeSecurityError;
+    if (bridge != null) return 'Мост: $bridge';
+    return null;
+  }
+
+  /// Error for the API address only.
+  String? get baseSecurityError => _securityErrorFor(normalizedBase);
+
+  /// Error for the bridge address only.
+  String? get bridgeSecurityError => _securityErrorFor(normalizedBridge);
+
+  /// Error that should block the next generation. A configured but disabled
+  /// bridge does not block direct API requests.
+  String? get generationSecurityError {
+    final base = baseSecurityError;
+    if (base != null) return base;
+    if (!chatViaBridge) return null;
+    final bridge = bridgeSecurityError;
+    return bridge == null ? null : 'Мост: $bridge';
   }
 
   Uri get modelsUri => Uri.parse('$normalizedBase/v1/models');

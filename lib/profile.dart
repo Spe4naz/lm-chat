@@ -136,6 +136,7 @@ class AppProfile {
         // by hand. The new device asks for them again.
         server.apiKey = '';
         server.bridgeToken = '';
+        if (server.generationSecurityError != null) continue;
         servers.add(server);
       }
     }
