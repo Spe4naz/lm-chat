@@ -1,188 +1,154 @@
 # TODO
 
-Текущая версия: **1.8.1**, плагин **0.1.4**.
+Текущая версия: **1.8.2**, плагин **0.1.5**.
 
-## Аудит 2026-11-13
+P0 и P1 закрыты в исходниках, большинство P2 — тоже. Ниже только открытые
+задачи; выполненное вынесено в конец файла.
 
-Проверены приложение, плагин `lm-computer`, Python-мостик, Android-манифест и
-подпись, автообновление, systemd-скрипты и CI.
+## Открытые задачи
 
-Результаты проверок:
+### P1 — безопасность и выпуск
 
-- `flutter analyze` — без замечаний;
-- `flutter test` — 165/165;
-- плагин: `npm run build`, `npm test` — 34/34;
-- Python: `pytest tools/test_lms_gpu_bridge.py` — 17/17;
-- `npm audit`: 5 уязвимостей (2 critical, 2 high, 1 moderate), в основном
-  dev-зависимости `vitest`/`tinypool`; `zod` проходит и в production-цепочку.
+- [ ] **Полностью закрыть cleartext на Android.** Сейчас
+      `usesCleartextTraffic="true"` остаётся, потому что Android Network
+      Security Config не поддерживает CIDR, а приложению нужны произвольные
+      LAN-IP по HTTP. Публичный HTTP уже отклоняется в `ServerConfig` до
+      открытия сокета, но манифест всё ещё разрешает cleartext для любого кода
+      внутри приложения. Полное решение: HTTPS или локальный reverse proxy для
+      LM Studio/мостика.
 
-P0 закрыты в исходниках. Чтобы они попали на устройства, нужен новый релиз
-приложения; плагин обновляется через `git pull && ./install.sh`.
+- [ ] **Настроить release-подпись.** Исходники готовы: release APK без
+      `android/key.properties` не собирается, APK проверяется по сертификату,
+      Windows installer — по Authenticode. Осталось создать keystore и
+      сертификат, добавить их в локальную/CI-сборку и задать
+      `LMCHAT_SIGN_CERT` для `build_windows_installer.ps1`.
 
-Пути `src/core/...`, `install.sh`, `start.sh`, `stop.sh` и `prompts/...`
-относятся к отдельному репозиторию `tools/lm-computer-plugin`.
+- [ ] **Выпустить приложение 1.8.2.** Собранный debug APK проверен, release
+      ожидаемо требует keystore. Установленные APK/EXE пока остаются на 1.8.0.
 
-### P0 — безопасность, исправить первым
+- [ ] **Обновить плагин на Ubuntu.** Хост `192.168.0.183` был недоступен;
+      после включения: `cd ~/lm-computer && git pull && ./install.sh`, затем
+      проверить `lm-computer.service` и порты `1236`/`1237`.
 
-- [x] **Обход workspace через dangling symlink.** Исправлено: `PathGuard`
-      проверяет `lstat` каждого несуществующего компонента и отклоняет
-      dangling-ссылки, а `fs_append` на Unix открывает файл с `O_NOFOLLOW`.
-      `src/core/paths.ts:73`, `src/core/files.ts:122`. Тесты:
-      `test/paths.test.ts` (dangling file и dangling directory).
+### P2 — зависимости и CI
 
-- [x] **Сетевой слой приложения не проверял `securityError`.** Исправлено:
-      `LmClient` проверяет base/bridge до сокета (`lib/api.dart`), `send()` и
-      `_generate()` блокируют небезопасный сервер (`lib/app_state.dart`),
-      импорт истории/профиля вырезает токены и пропускает небезопасные серверы
-      (`lib/app_state.dart`, `lib/profile.dart`). Тесты:
-      `test/security_test.dart`.
+- [ ] **`zod` 3 → 4.** `npm audit` показывает 2 high из-за
+      `zod` 3 и транзитивного `@lmstudio/sdk` 2.1.0. Обновление заблокировано
+      до версии SDK с поддержкой zod 4; пока размеры тел и аргументов
+      ограничены в коде.
 
-- [x] **Bridge URL не валидировался, а `bridgeUrlForBase` всегда давал
-      `http`.** Исправлено: `ServerConfig.bridgeSecurityError` проверяет мост,
-      `bridgeUrlForBase` не строит адрес для публичного хоста, а клиент
-      раздельно проверяет base и bridge (`lib/models.dart`, `lib/api.dart`).
-      Тесты: `test/security_test.dart`.
+- [ ] **Мажорные обновления Flutter-пакетов.** 12 пакетов имеют новые
+      мажорные версии; обновлять по одному с прогоном `flutter test`.
 
-### P1 — высокий приоритет
+- [ ] **Дозакрепить CI.** `permissions: contents: read`,
+      `npm audit --omit=dev`, CodeQL, OSV, dependency review и SBOM добавлены.
+      Осталось закрепить старые `ci.yml`/`secret-scan.yml` по commit SHA и
+      добавить release-сборку APK с проверкой подписи.
 
-- [ ] **Утечка окружения LM Studio через `shell_run`.**
-      `src/core/shell.ts:92` передаёт команде весь `process.env`, включая
-      `LMS_PLUGIN_CLIENT_PASSKEY` и другие внутренние переменные. Команда `env`
-      выведет их модели. Исправить: минимальный allowlist (`PATH`, `HOME`,
-      `LANG`, `TERM`, `TMPDIR`, `USER`) и явная передача нужных переменных.
-
-- [ ] **`PUT /api/config` разрешает сменить workspace на `/`.**
-      `src/core/service.ts:190` и `src/core/http.ts:123` принимают любой путь.
-      После этого `fs_write`/`fs_append` пишут куда угодно без подтверждения.
-      Ограничить workspace домашним каталогом/явно разрешённым корнем либо
-      требовать локальное подтверждение на смену корня.
-
-- [ ] **Автообновление и подпись релизов.**
-      `android/app/build.gradle.kts` при отсутствии `key.properties` подписывает
-      release debug-ключом; Windows installer не подписан; SHA-256 берётся из
-      того же GitHub-релиза. Включить стабильный release-keystore в CI,
-      подписывать installer, добавить проверку подписи APK/EXE или публиковать
-      подписанный manifest. Пока не исправлено — не включать автообновление в
-      публичных сборках.
-
-- [ ] **Импорт истории доверяет серверам из файла.**
-      `lib/app_state.dart:1890` создаёт `ServerConfig` с `apiKey`/`bridgeToken`
-      из JSON, а `:2021` добавляет их в активные. Экспорт токенов не содержит,
-      поэтому при импорте их нужно вырезать и валидировать URL. Профиль уже
-      очищает секреты (`lib/profile.dart:137`), историю — нет.
-
-- [ ] **Denylist shell обходится, а `shell_run` — это полный доступ
-      пользователя.** `src/core/shell.ts:10` не ловит `/usr/bin/sudo`,
-      `bash -c 'sudo …'`, `env sudo`, кодирование и скрипты. Обновить
-      `SECURITY.md`: denylist — защита от случайностей, а не sandbox. После
-      подтверждения shell может читать токен плагина, `~/.ssh` и обходить
-      workspace. Рассмотреть запрет shell при автопринятии или отдельное
-      подтверждение для команд вне workspace.
-
-- [ ] **`usesCleartextTraffic="true"` на весь Android-клиент.**
-      `android/app/src/main/AndroidManifest.xml` разрешает HTTP к любому хосту.
-      Добавить `networkSecurityConfig` с cleartext только для локальных
-      адресов либо оставить HTTP только для отладочной сборки.
-
-### P2 — средний приоритет
-
-- [ ] **Python-мостик: память и потоки.**
-      `tools/lms_gpu_bridge.py:219` хранит все события задания без лимита,
-      `:250` — до 8 заданий по 32 МиБ, `:444` — чтение тела без таймаута,
-      `:464` — `/health` без авторизации запускает `lms`. Ограничить размер
-      событий/заданий, добавить таймауты чтения и кэшировать `/health`.
-
-- [ ] **Автообновление: размер, имя файла и таймауты.**
-      `lib/updater.dart:149` подставляет `assetName` в путь без проверки,
-      `:203` не ограничивает общий размер загрузки, `:227` таймаут только на
-      очередной чанк. Проверять имя файла по allowlist, ограничивать размер,
-      задавать общий deadline и удалять частичный файл.
-
-- [ ] **Остановка сервиса не отменяет дочерние процессы.**
-      `src/standalone.ts:14` по SIGTERM вызывает только `stopHttp()`;
-      `systemctl --user stop` не прерывает активные `shell_run`. Вызывать
-      `service.cancelAll()` и ждать завершения процессов.
-
-- [ ] **Zenity не появится, если приложение перестало опрашивать REST после
-      создания запроса.** `src/core/approvals.ts:151` проверяет
-      `isAppActive()` один раз. Добавить таймер: если приложение не забрало
-      подтверждение за N секунд, показать zenity.
-
-- [ ] **Systemd-юнит без базового hardening.**
-      `install.sh` генерирует unit без `NoNewPrivileges`, `PrivateTmp`,
-      `ProtectSystem`, `ReadWritePaths`. Добавить их, сохранив доступ к
-      workspace и `~/.config/lm-computer`.
-
-- [ ] `src/core/audit.ts:19` редактирует только поля с именами token/secret;
-      команды и аргументы могут содержать пароли. Добавить маскирование
-      известных шаблонов и ротацию `audit.jsonl`.
-- [ ] `src/core/http.ts:361` — CORS `*` для API с Bearer-токеном. Ограничить
-      список origin или убрать CORS, если браузерный клиент не нужен.
-- [ ] `src/core/files.ts:47` — `fs_list` делает `stat` по symlink и отдаёт
-      метаданные цели вне workspace; не следовать ссылкам.
-- [ ] `src/core/files.ts:149` — `fs_move` не обрабатывает `EXDEV`; на разных
-      файловых системах нужен copy+delete.
-- [ ] `src/core/files.ts:196` — поиск без совпадений обходит всё дерево до
-      глубины 8; добавить лимит просмотренных файлов/времени.
-- [ ] `lib/app_state.dart:753`, `:1828`, `:2343` — файл читается целиком до
-      проверки размера; проверять `file.length()` до `readAsBytes()`.
-- [ ] `lib/profile.dart:209` — `defaultMaxTokens` не ограничивается; добавить
-      clamp и валидацию.
-- [ ] `lib/models.dart:143` — односоставное имя хоста считается локальным;
-      `http://evil` может резолвиться в публичный IP. Убрать это исключение или
-      проверять DNS-результат.
-- [ ] `tools/lms_gpu_bridge.py:103` — `run_lms` собирает stdout/stderr без
-      лимита; ограничить вывод.
-- [ ] `tools/lms_gpu_bridge.py:276` — IPv6-адрес `::1:1234` разбирается
-      неверно; использовать `urllib.parse` и `ipaddress`.
-- [ ] Плагин: `npm audit` — обновить `vitest`/`tinypool` (critical, dev) и
-      оценить переход на `zod` 4 / совместимую версию `@lmstudio/sdk`.
-- [ ] Приложение: 12 пакетов имеют новые мажорные версии; обновлять по одному
-      с прогоном тестов.
-- [ ] CI: закрепить GitHub Actions по commit SHA, добавить
-      `permissions: contents: read`, `npm audit --omit=dev`, отчёт
-      `flutter pub outdated` и сборку release APK с проверкой подписи.
+- [ ] **Убрать предупреждение SmartScreen.** Подписать APK и Windows installer
+      постоянным сертификатом (пересекается с задачей о release-подписи).
 
 ### P3 — позже
 
-- [ ] `lib/custom_font.dart:33` — `_safeFileName` пропускает `..`;
-      ограничить имена файлов и проверять, что путь остаётся в `fonts/`.
-- [ ] Добавить тесты на обход symlink, `securityError` в сетевом слое,
-      импорт серверов из файла и ограничения загрузки обновлений.
-- [ ] Добавить CodeQL/SBOM и проверку зависимостей в оба репозитория.
-- [ ] Рассмотреть TLS/локальный reverse proxy для `1236`/`1237`/`1235`:
+- [ ] Рассмотреть TLS/локальный reverse proxy для `1235`/`1236`/`1237`:
       сейчас токены и чат идут по LAN в cleartext.
 
-### Что уже сделано правильно
+- [ ] Проверить интерфейс на реальном Android: узкий экран, крупный системный
+      шрифт, светлая тема, голосовой ввод.
 
-- `PathGuard` корректно блокирует `..` и symlink-родителей для существующих
-  целей; проблема только с dangling-ссылками.
-- Токены не попадают в `lm_chat_data.json`, экспорт и профиль; история
-  очищается от старых plaintext-секретов.
-- API-токены и bridge-токены хранятся в `flutter_secure_storage`; при
-  недоступном keystore остаются только в памяти.
-- SHA-256 обновления проверяется до установки; частичный файл удаляется.
-- Плагин требует Bearer-токен, использует timing-safe сравнение, ограничивает
-  тело запроса и не печатает токен в логах.
-- Python-мостик требует `BRIDGE_TOKEN` при прослушивании не-loopback адреса и
-  использует `hmac.compare_digest`.
-- Секреты не найдены в текущих исходниках; gitleaks настроен на оба репозитория.
-
-## P3 — следующие возможности
+### Новые возможности
 
 - [ ] **Tool / function calling** и поддержка OpenAI-совместимых tools.
 - [ ] **Дополнительные параметры генерации:** `seed`, `stop`,
       `presence_penalty`, `frequency_penalty`, `min_p`.
 - [ ] **Сравнение моделей** side-by-side на одном запросе.
 - [ ] **Локальный RAG** через embeddings-модели LM Studio.
-
-## Проверка и полировка
-
-- [ ] Проверить новый интерфейс на реальном Android: узкий экран, крупный
-      системный шрифт, светлая тема, голосовой ввод.
-- [ ] Подписать APK и установщик сертификатом, чтобы убрать SmartScreen.
-
-## Идеи без приоритета
-
 - [ ] Показывать стоимость/энергопотребление ответа, если сервер отдаёт
       метрики.
+
+## Сделано (архив)
+
+### P0 — безопасность
+
+- Обход workspace через dangling symlink: `PathGuard` проверяет `lstat`
+  каждого несуществующего компонента, `fs_append` на Unix использует
+  `O_NOFOLLOW`. Тесты: `test/paths.test.ts`.
+- Сетевой слой приложения: `LmClient` проверяет base/bridge до сокета,
+  `send()`/`_generate()` блокируют небезопасный сервер, импорт истории и
+  профиля вырезает токены и пропускает небезопасные URL. Тесты:
+  `test/security_test.dart`.
+- Bridge URL: `bridgeSecurityError` проверяет мост отдельно,
+  `bridgeUrlForBase()` не строит `http://` для публичного хоста.
+
+### P1 — высокий приоритет
+
+- `shell_run` получает только allowlist окружения (`PATH`, `HOME`, `LANG`,
+  `TERM`, `TMPDIR`, display, системные пути Windows). `LMS_*`, proxy-
+  переменные и `SSH_AUTH_SOCK` не передаются. `src/core/shell.ts`.
+- `PUT /api/config` не может сменить workspace на `/` или symlink вне
+  домашнего каталога/`LM_COMPUTER_ALLOWED_ROOTS`. Проверка выполняется до
+  `mkdir`, ответ — `400`. `src/config.ts`, `src/core/service.ts`,
+  `src/core/http.ts`.
+- Подпись обновлений: release APK без `android/key.properties` не собирается,
+  Android сверяет сертификат APK с установленным, Windows проверяет
+  Authenticode, installer умеет подписываться через `signtool`.
+- Denylist shell ловит `sudo`/`doas`/`pkexec` в любом месте строки, включая
+  `/usr/bin/sudo`, `env sudo` и `bash -c 'sudo …'`; документация прямо
+  называет denylist защитой от случайностей, а не sandbox.
+- Импорт истории больше не доверяет серверам и токенам из файла.
+
+### P2 — средний приоритет
+
+- Python-мостик: лимиты `MAX_EVENTS`, `MAX_JOB_BYTES`, таймаут чтения тела,
+  публичный `/health` без запуска `lms`, ограничение вывода `lms`, корректный
+  разбор IPv6.
+- Автообновление: allowlist имён APK/EXE, только HTTPS `github.com`, лимит
+  400 МБ, проверка `Content-Length`, общий дедлайн, удаление частичного файла.
+- `ComputerService.shutdown()` отменяет подтверждения, ждёт завершения
+  shell-процессов и затем останавливает HTTP; используется в `standalone.ts` и
+  `/api/shutdown`.
+- Zenity: таймер перепроверяет активность приложения, пока запрос в очереди.
+- Systemd: `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`,
+  `ProtectControlGroups`, `ProtectKernelTunables`, `ProtectKernelModules`,
+  `ProtectClock`, `RestrictSUIDSGID`, `RestrictAddressFamilies`, `UMask=0077`.
+- Audit: маскирование bearer-токенов, паролей, API-ключей и URL userinfo;
+  ротация `audit.jsonl` после 5 МБ.
+- CORS выключен по умолчанию; Origin отражается только из
+  `LM_COMPUTER_CORS_ORIGINS`.
+- `fs_list` не следует symlink; `fs_move` обрабатывает `EXDEV`; `fs_search`
+  ограничен 10 000 записей и 5 секундами.
+- Приложение проверяет размер файла до `readAsBytes()` для шрифта, истории и
+  профиля (лимит 32 МБ).
+- `defaultMaxTokens` в профиле нормализуется: `<= 0` → `-1`, положительные
+  значения ограничены 131072.
+- Односоставное имя хоста больше не считается локальным: `http://ubuntu`
+  отклоняется, `http://ubuntu.local` — нет.
+- `vitest` обновлён до 5.1.0, critical `tinypool` закрыт.
+- Добавлены тесты на symlink, `securityError`, импорт серверов, лимиты
+  обновлений, workspace, shell env, audit и CORS.
+
+### P3 — безопасность и CI
+
+- `lib/custom_font.dart`: имена файлов шрифтов проверяются по строгому
+  шаблону, `..`, разделители, не-TTF и symlink отклоняются; путь обязан
+  оставаться внутри `fonts/`. Тест: `test/custom_font_test.dart`.
+- В оба репозитория добавлены CodeQL, OSV-скан зависимостей,
+  dependency review для PR и SBOM:
+  - `lm-chat`: CodeQL (Python), OSV, SPDX SBOM через `anchore/sbom-action`;
+  - `lm-computer`: CodeQL (JavaScript/TypeScript), OSV, CycloneDX SBOM через
+    `npm sbom`.
+- GitHub Actions в новых workflow закреплены по commit SHA (кроме
+  `dependency-review-action` и `sbom-action`, которые используют major-тег).
+
+### Проверки на 2026-11-13
+
+- `flutter analyze` — без замечаний;
+- `flutter test` — **171/171**;
+- плагин: `npm run build`, `npm test` — **43/43**;
+- Python: `pytest tools/test_lms_gpu_bridge.py` — **19/19**;
+- `flutter build apk --debug` — успешно;
+- `flutter build apk --release` — ожидаемо падает без keystore;
+- `npm audit`: 2 high (`zod` 3 и `@lmstudio/sdk`), критичных нет.
+
+Пути `src/core/...`, `install.sh`, `start.sh`, `stop.sh` и `prompts/...`
+относятся к отдельному репозиторию `tools/lm-computer-plugin`.
