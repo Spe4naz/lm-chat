@@ -23,14 +23,16 @@
 
 ### P0 — безопасность, исправить первым
 
-- [ ] **Обход workspace через dangling symlink + `fs_append`.**
+- [ ] **Обход workspace через dangling symlink.**
       `src/core/paths.ts:73` (`realpathNearest`) считает dangling-ссылку
-      безопасной, потому что её цель ещё не существует. После этого
-      `src/core/files.ts:122` (`appendFile`) идёт по ссылке и создаёт/пишет файл
-      вне workspace. Исправить: проверять `lstat` каждого компонента, отклонять
-      symlink в конечном компоненте и dangling-ссылки; для записи использовать
-      `O_NOFOLLOW` либо `realpath` после создания. Добавить тест:
-      `link -> /home/user/.ssh/authorized_keys` (не существует) + `fs_append`.
+      безопасной, потому что её цель ещё не существует. Дальше `fs_append`
+      (`src/core/files.ts:122`) идёт по ссылке, а `fs_write`/`fs_move` создают
+      родительские каталоги через `fs.mkdir` — в итоге файл можно создать или
+      дописать вне workspace. Исправить: проверять `lstat` каждого компонента,
+      отклонять symlink в конечном компоненте и dangling-ссылки; для записи
+      использовать `O_NOFOLLOW` либо `realpath` после создания. Тесты:
+      `link -> /home/user/.ssh/authorized_keys` (не существует) + `fs_append`;
+      `link -> /home/user/newdir` + `fs_write link/file`.
 
 - [ ] **Сетевой слой приложения не проверяет `securityError`.**
       Проверка есть только в UI (`welcome_screen.dart:41`,
@@ -161,7 +163,7 @@
 ### Что уже сделано правильно
 
 - `PathGuard` корректно блокирует `..` и symlink-родителей для существующих
-  целей; проблема только с dangling-ссылками в `fs_append`.
+  целей; проблема только с dangling-ссылками.
 - Токены не попадают в `lm_chat_data.json`, экспорт и профиль; история
   очищается от старых plaintext-секретов.
 - API-токены и bridge-токены хранятся в `flutter_secure_storage`; при
