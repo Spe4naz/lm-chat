@@ -154,8 +154,10 @@ class ServerConfig {
         return loopback || uniqueLocal || linkLocal;
       }
     }
-    // Single-label mDNS-style hostnames such as "ubuntu".
-    return !host.contains('.');
+    // A single-label name such as "ubuntu" is not provably local: it can
+    // resolve to a public address through DNS search domains. Require an
+    // explicit private name (`.local`) or a private IP literal.
+    return false;
   }
 
   static bool _isPrivateIpv4(List<int> b) {

@@ -119,6 +119,9 @@ class ContextUsage {
   double get fraction => limit <= 0 ? 0 : (used / limit).clamp(0.0, 1.0);
 }
 
+/// Upper bound for a history/profile file before it is read into memory.
+const int _maxImportBytes = 32 * 1024 * 1024;
+
 class AppState extends ChangeNotifier with WidgetsBindingObserver {
   AppState({LmClient? client, SecretStore? secretStore})
     : _client = client ?? LmClient(),
@@ -750,6 +753,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         dialogTitle: L10n.t('Выберите TTF-шрифт'),
       );
       if (file == null) return const FontImportResult(cancelled: true);
+      final fontLength = await file.length();
+      if (fontLength != null && fontLength > CustomFontService.maxBytes) {
+        return FontImportResult(
+          error: L10n.t('Файл шрифта слишком большой (максимум 32 МБ)'),
+        );
+      }
       final bytes = await file.readAsBytes();
       if (bytes.isEmpty) {
         return FontImportResult(error: L10n.t('Файл шрифта пуст'));
@@ -1840,6 +1849,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         allowedExtensions: ['json'],
       );
       if (file == null) return const ImportPreview(cancelled: true);
+      final length = await file.length();
+      if (length != null && length > _maxImportBytes) {
+        return ImportPreview(
+          error: L10n.t('Файл слишком большой для импорта (максимум 32 МБ)'),
+        );
+      }
       final bytes = await file.readAsBytes();
       return await parseHistoryJsonAsync(
         utf8.decode(bytes, allowMalformed: true),
@@ -2371,6 +2386,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         dialogTitle: L10n.t('Импорт профиля'),
       );
       if (file == null) return const ProfilePreview(cancelled: true);
+      final length = await file.length();
+      if (length != null && length > _maxImportBytes) {
+        return ProfilePreview(
+          sourceName: file.name,
+          error: L10n.t('Файл профиля слишком большой (максимум 32 МБ)'),
+        );
+      }
       final bytes = await file.readAsBytes();
       return await parseProfileJsonAsync(
         utf8.decode(bytes, allowMalformed: true),

@@ -36,4 +36,16 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Installer build failed'
 }
 
-Write-Host "Done: dist\lm-chat-setup-$version.exe"
+$installer = "dist\lm-chat-setup-$version.exe"
+if ($env:LMCHAT_SIGN_CERT) {
+    Write-Host "Signing $installer with certificate $env:LMCHAT_SIGN_CERT..."
+    & signtool sign /sha1 $env:LMCHAT_SIGN_CERT /fd SHA256 `
+        /tr http://timestamp.digicert.com /td SHA256 $installer
+    if ($LASTEXITCODE -ne 0) {
+        throw 'signtool failed; the installer must not be published unsigned'
+    }
+} else {
+    Write-Warning 'Installer is unsigned. Auto-update rejects unsigned installers.'
+}
+
+Write-Host "Done: $installer"

@@ -2,6 +2,7 @@ package app.lmchat
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -11,6 +12,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     private var pendingStartText: String? = null
@@ -48,6 +50,8 @@ class MainActivity : FlutterActivity() {
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "canInstallPackages" -> result.success(canInstallPackages())
+                "verifyApkSignature" ->
+                    result.success(verifyApkSignature(call.argument<String>("path")))
                 "openInstallSettings" -> {
                     openInstallSettings()
                     result.success(true)
@@ -56,6 +60,40 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun verifyApkSignature(path: String?): Boolean {
+        if (path.isNullOrEmpty()) return false
+        return try {
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                PackageManager.GET_SIGNATURES
+            }
+            val archive = packageManager.getPackageArchiveInfo(path, flags) ?: return false
+            val current = packageManager.getPackageInfo(packageName, flags)
+            val expected = certificateDigests(current)
+            val actual = certificateDigests(archive)
+            expected.isNotEmpty() && actual == expected
+        } catch (error: Exception) {
+            false
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun certificateDigests(info: PackageInfo): Set<String> {
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.signingInfo?.apkContentsSigners
+        } else {
+            info.signatures
+        } ?: return emptySet()
+        val digest = MessageDigest.getInstance("SHA-256")
+        return signatures.map { signature ->
+            digest.reset()
+            digest.digest(signature.toByteArray())
+                .joinToString("") { byte -> "%02x".format(byte) }
+        }.toSet()
     }
 
     private fun canInstallPackages(): Boolean =

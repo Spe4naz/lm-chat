@@ -52,6 +52,23 @@ void main() {
     );
   });
 
+  test('a single-label hostname is not assumed to be local', () {
+    final server = ServerConfig(
+      id: 'dns',
+      name: 'DNS',
+      baseUrl: 'http://ubuntu:1234',
+    );
+    expect(server.securityError, isNotNull);
+    expect(
+      ServerConfig(
+        id: 'mdns',
+        name: 'mDNS',
+        baseUrl: 'http://ubuntu.local:1234',
+      ).securityError,
+      isNull,
+    );
+  });
+
   test('client refuses unsafe servers before opening a socket', () async {
     final client = LmClient();
     addTearDown(client.close);

@@ -102,6 +102,63 @@ void main() {
     );
   });
 
+  test('a release with an unexpected asset name is rejected', () {
+    final assets = [
+      {
+        'name': 'lm-chat-setup-evil.exe',
+        'browser_download_url': 'https://github.com/Spe4naz/lm-chat/releases/download/v1.8.1/lm-chat-setup-evil.exe',
+        'size': 456,
+        'digest': 'sha256:$_hash',
+      },
+    ];
+    expect(
+      () => UpdateService.parseRelease(
+        _release(assets: assets),
+        platform: 'windows',
+        currentVersion: Version.parse('1.7.1'),
+      ),
+      throwsA(isA<UpdateException>()),
+    );
+  });
+
+  test('an oversized update asset is rejected', () {
+    final assets = [
+      {
+        'name': 'lm-chat-universal.apk',
+        'browser_download_url': 'https://github.com/Spe4naz/lm-chat/releases/download/v1.8.1/lm-chat-universal.apk',
+        'size': UpdateService.maxAssetBytes + 1,
+        'digest': 'sha256:$_hash',
+      },
+    ];
+    expect(
+      () => UpdateService.parseRelease(
+        _release(assets: assets),
+        platform: 'android',
+        currentVersion: Version.parse('1.7.1'),
+      ),
+      throwsA(isA<UpdateException>()),
+    );
+  });
+
+  test('a non-GitHub download URL is rejected', () {
+    final assets = [
+      {
+        'name': 'lm-chat-universal.apk',
+        'browser_download_url': 'https://evil.example/lm-chat-universal.apk',
+        'size': 123,
+        'digest': 'sha256:$_hash',
+      },
+    ];
+    expect(
+      () => UpdateService.parseRelease(
+        _release(assets: assets),
+        platform: 'android',
+        currentVersion: Version.parse('1.7.1'),
+      ),
+      throwsA(isA<UpdateException>()),
+    );
+  });
+
   test('update preferences survive a json round trip', () {
     final data = AppData(
       autoCheckUpdates: false,

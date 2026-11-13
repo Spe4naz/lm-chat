@@ -33,14 +33,24 @@ the repository history. Removing the file alone is not enough.
 ## Updates
 
 Auto-update uses the public GitHub Releases API for `Spe4naz/lm-chat`. The app
-downloads the asset selected for the current platform and verifies its SHA-256
-digest from the GitHub API before execution. The GitHub token is not required
-and is never embedded in the app.
+accepts only an allowlisted asset name and an HTTPS `github.com` URL, caps the
+download at 400 MB, applies an overall deadline, verifies the SHA-256 digest
+from the GitHub API, and deletes a partial file on failure.
 
-Android releases must be signed with the same key as the installed app.
-The current release is debug-signed for sideloading; public releases should use
-a stable release keystore. The Windows installer is unsigned, so SmartScreen
-may warn even though the downloaded file is hash-checked.
+Android releases must be signed with the same key as the installed app. The app
+compares the signing certificate of the downloaded APK with the installed one
+before opening the system installer, and release builds fail unless
+`android/key.properties` is configured. The Windows installer is verified with
+Authenticode before it runs; an unsigned installer is rejected.
+
+## Cleartext HTTP
+
+Android's network security config cannot express "cleartext only for RFC1918
+addresses", and the app must reach arbitrary LAN IPs over HTTP. The manifest
+therefore keeps cleartext enabled, while every network call validates the host
+in `lib/models.dart`: public HTTP endpoints are rejected and only HTTPS is
+allowed outside the local network. API keys and bridge tokens are never sent to
+a public cleartext host.
 
 ## Local network
 

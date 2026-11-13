@@ -7,13 +7,17 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Optional release signing. Without android/key.properties the release build
-// keeps using the debug key so `flutter run --release` still works locally.
+// Optional release signing. A release build must never silently use the debug
+// key: set LMCHAT_ALLOW_DEBUG_SIGNING=1 only for a local `flutter run
+// --release`, never for a published APK.
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
+val allowDebugSigning =
+    System.getenv("LMCHAT_ALLOW_DEBUG_SIGNING") == "1" ||
+        (project.findProperty("lmchatAllowDebugSigning") as String?)?.toBoolean() == true
 
 android {
     namespace = "app.lmchat"
@@ -52,12 +56,26 @@ android {
 
     buildTypes {
         release {
-            // Use the real key when android/key.properties exists; otherwise
-            // fall back to the debug key for local `flutter run --release`.
-            signingConfig = if (keystorePropertiesFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            // Published builds require android/key.properties. An unsigned
+            // config would silently produce a debug-signed APK, so the release
+            // tasks below also fail unless the key or the local opt-in exists.
+            signingConfig = when {
+                keystorePropertiesFile.exists() -> signingConfigs.getByName("release")
+                allowDebugSigning -> signingConfigs.getByName("debug")
+                else -> null
+            }
+        }
+    }
+}
+
+if (!keystorePropertiesFile.exists() && !allowDebugSigning) {
+    tasks.configureEach {
+        if (name.contains("Release")) {
+            doFirst {
+                throw GradleException(
+                    "Release signing is not configured. Create android/key.properties " +
+                        "or set LMCHAT_ALLOW_DEBUG_SIGNING=1 for a local test build.",
+                )
             }
         }
     }

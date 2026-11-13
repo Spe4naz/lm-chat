@@ -26,6 +26,10 @@ Environment variables:
     BRIDGE_CHAT_TIMEOUT  seconds to wait for chat tokens (default: 1800)
     BRIDGE_JOB_TTL       seconds to keep a finished chat job (default: 3600)
     BRIDGE_MAX_JOBS      maximum chat jobs kept in memory (default: 8)
+    BRIDGE_MAX_EVENTS    maximum events per chat job (default: 20000)
+    BRIDGE_MAX_JOB_BYTES maximum retained payload bytes of all jobs (64 MiB)
+    BRIDGE_READ_TIMEOUT  seconds to read a request body (default: 30)
+    BRIDGE_MAX_LMS_OUTPUT maximum bytes of `lms` output (default: 1 MiB)
     BRIDGE_MAX_BODY      maximum request body size in bytes (default: 32 MiB;
                          large enough for base64 vision images)
 
@@ -55,8 +59,10 @@ from __future__ import annotations
 
 import hmac
 import http.client
+import ipaddress
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -79,6 +85,14 @@ CHAT_TIMEOUT = int(os.environ.get("BRIDGE_CHAT_TIMEOUT", "1800"))
 JOB_TTL = int(os.environ.get("BRIDGE_JOB_TTL", "3600"))
 MAX_JOBS = int(os.environ.get("BRIDGE_MAX_JOBS", "8"))
 MAX_BODY = int(os.environ.get("BRIDGE_MAX_BODY", str(32 * 1024 * 1024)))
+MAX_EVENTS = int(os.environ.get("BRIDGE_MAX_EVENTS", "20000"))
+MAX_JOB_BYTES = int(
+    os.environ.get("BRIDGE_MAX_JOB_BYTES", str(64 * 1024 * 1024))
+)
+READ_TIMEOUT = int(os.environ.get("BRIDGE_READ_TIMEOUT", "30"))
+MAX_LMS_OUTPUT = int(
+    os.environ.get("BRIDGE_MAX_LMS_OUTPUT", str(1024 * 1024))
+)
 
 AUTH_SCHEME = "Bearer "
 
@@ -117,6 +131,10 @@ def run_lms(args: list[str], timeout: int = 60) -> str:
         raise LmsError(f"lms не ответил за {timeout} с") from exc
 
     output = (proc.stdout + proc.stderr).strip()
+    if len(output) > MAX_LMS_OUTPUT:
+        # `lms ps --json` on a large cache can be several megabytes; never keep
+        # or return an unbounded amount.
+        output = output[:MAX_LMS_OUTPUT] + "\n[output truncated]"
     if proc.returncode != 0:
         raise LmsError(output or f"lms завершился с кодом {proc.returncode}")
     return output
@@ -206,6 +224,9 @@ class ChatJob:
     def __init__(self, job_id: str, payload: dict[str, Any]):
         self.id = job_id
         self.payload = payload
+        self.payload_size = len(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        )
         self.events: list[dict[str, Any]] = []
         self.done = False
         self.error: str | None = None
@@ -220,6 +241,18 @@ class ChatJob:
         if not content and not reasoning:
             return
         with self.cond:
+            if self.done or self.cancelled:
+                return
+            if len(self.events) >= MAX_EVENTS:
+                # A runaway model must not grow the process without bound.
+                self.done = True
+                self.error = (
+                    f"ответ превысил лимит событий ({MAX_EVENTS}); "
+                    "увеличьте BRIDGE_MAX_EVENTS или сократите ответ"
+                )
+                self.finished = time.time()
+                self.cond.notify_all()
+                return
             self.events.append(
                 {
                     "seq": len(self.events) + 1,
@@ -274,12 +307,34 @@ def _job(job_id: str) -> ChatJob | None:
 
 
 def _split_host(value: str) -> tuple[str, int, str]:
-    """`192.168.1.5:1234` or `https://host:1234` -> (host, port, scheme)."""
+    """`192.168.1.5:1234`, `https://host:1234` or `[::1]:1234` -> tuple."""
     text = value.strip() or "127.0.0.1:1234"
     if "://" in text:
         parsed = urlparse(text)
         port = parsed.port or (443 if parsed.scheme == "https" else 1234)
         return parsed.hostname or "127.0.0.1", port, parsed.scheme
+
+    if text.startswith("["):
+        parsed = urlparse(f"//{text}")
+        if parsed.hostname:
+            return parsed.hostname, parsed.port or 1234, "http"
+
+    # Bare IPv6. Prefer an explicit trailing port (`::1:1234`) when the prefix
+    # is a valid address; otherwise treat the whole value as the address.
+    if text.count(":") >= 2:
+        match = re.match(r"^(.*):(\d+)$", text)
+        if match:
+            try:
+                ipaddress.ip_address(match.group(1))
+                return match.group(1), int(match.group(2)), "http"
+            except ValueError:
+                pass
+        try:
+            ipaddress.ip_address(text)
+            return text, 1234, "http"
+        except ValueError:
+            pass
+
     host, _, port = text.partition(":")
     try:
         number = int(port) if port else 1234
@@ -335,7 +390,7 @@ def _run_chat(job: ChatJob) -> None:
         if conn.sock is not None:
             conn.sock.settimeout(CHAT_TIMEOUT)
 
-        while not job.cancelled:
+        while not job.cancelled and not job.done:
             raw = response.readline()
             if not raw:
                 break
@@ -385,7 +440,7 @@ def _run_chat(job: ChatJob) -> None:
                     or ""
                 ),
             )
-        job.finish()
+        job.finish(job.error)
     except Exception as exc:  # noqa: BLE001 - reported to the client as text
         if job.cancelled:
             job.finish()
@@ -420,6 +475,12 @@ def _valid_job_id(value: str) -> bool:
 class Handler(BaseHTTPRequestHandler):
     server_version = "LmsGpuBridge/1.4"
     protocol_version = "HTTP/1.1"
+
+    def setup(self) -> None:
+        super().setup()
+        # Slow or stalled clients must not hold a worker thread forever while
+        # the body is being read.
+        self.connection.settimeout(READ_TIMEOUT)
 
     def _authorized(self) -> bool:
         if not TOKEN:
@@ -462,6 +523,20 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed_url.path
 
         if path == "/health":
+            if not self._authorized():
+                # Public health must not spawn `lms`: an unauthenticated caller
+                # could otherwise make the host execute a process per request.
+                self._send(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "lms": None,
+                        "host": LMS_HOST or None,
+                        "api": API_VERSION,
+                        "features": FEATURES,
+                    },
+                )
+                return
             try:
                 version = lms_version()
                 self._send(
@@ -560,6 +635,12 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
+        except (OSError, TimeoutError):
+            self._send(
+                HTTPStatus.REQUEST_TIMEOUT,
+                {"ok": False, "error": "таймаут чтения тела запроса"},
+            )
+            return
 
         try:
             if path == "/load":
@@ -617,12 +698,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, {"ok": True, "job": job_id, "done": existing.done})
             return
 
+        payload_size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        if payload_size > MAX_JOB_BYTES:
+            raise ValueError(
+                f"запрос больше лимита задания ({payload_size} > {MAX_JOB_BYTES} байт)"
+            )
+
         _cleanup_jobs()
         with _jobs_lock:
             if len(_jobs) >= MAX_JOBS:
                 self._send(
                     HTTPStatus.TOO_MANY_REQUESTS,
                     {"ok": False, "error": "слишком много заданий, попробуйте позже"},
+                )
+                return
+            retained = sum(job.payload_size for job in _jobs.values())
+            if retained + payload_size > MAX_JOB_BYTES:
+                self._send(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    {
+                        "ok": False,
+                        "error": "задания занимают слишком много памяти, попробуйте позже",
+                    },
                 )
                 return
             job = ChatJob(job_id, payload)

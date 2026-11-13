@@ -207,9 +207,10 @@ class AppProfile {
                   defaults.defaultRepeatPenalty)
               .clamp(0.5, 2.0)
               .toDouble(),
-      defaultMaxTokens:
-          (settings['defaultMaxTokens'] as num?)?.toInt() ??
-          defaults.defaultMaxTokens,
+      defaultMaxTokens: _clampMaxTokens(
+        settings['defaultMaxTokens'],
+        defaults.defaultMaxTokens,
+      ),
       defaultSystemPrompt:
           settings['defaultSystemPrompt'] as String? ??
           defaults.defaultSystemPrompt,
@@ -234,6 +235,14 @@ T _enumByName<T extends Enum>(List<T> values, Object? name, T fallback) {
     if (value.name == name) return value;
   }
   return fallback;
+}
+
+const int maxProfileTokens = 131072;
+
+int _clampMaxTokens(Object? value, int fallback) {
+  final parsed = (value as num?)?.toInt() ?? fallback;
+  if (parsed <= 0) return -1; // 0 and negative mean "server default".
+  return parsed.clamp(1, maxProfileTokens);
 }
 
 /// A profile read from a file, without changing the current settings yet.

@@ -122,11 +122,15 @@ class BridgeTest(unittest.TestCase):
             return exc.code, json.loads(exc.read())
 
     def test_health_is_public(self) -> None:
+        before = len(self.calls)
         status, payload = self.request("GET", "/health", token=None)
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["api"], bridge.API_VERSION)
         self.assertIn("chat", payload["features"])
+        self.assertIsNone(payload["lms"])
+        # Public health must not run `lms`.
+        self.assertEqual(len(self.calls), before)
 
     def test_load_requires_token(self) -> None:
         status, payload = self.request("POST", "/load", {"model": "m"}, token=None)
@@ -236,6 +240,29 @@ class BridgeTest(unittest.TestCase):
         # The fake lms prints plain text, so the bridge returns it as a string.
         self.assertIn("ps", payload["result"])
 
+    def test_split_host_handles_ipv6(self) -> None:
+        self.assertEqual(bridge._split_host("::1:1234"), ("::1", 1234, "http"))
+        self.assertEqual(bridge._split_host("[::1]:2345"), ("::1", 2345, "http"))
+        self.assertEqual(bridge._split_host("fe80::1"), ("fe80::1", 1234, "http"))
+        self.assertEqual(
+            bridge._split_host("https://[fd00::1]:1234"),
+            ("fd00::1", 1234, "https"),
+        )
+
+    def test_chat_job_event_limit(self) -> None:
+        old = bridge.MAX_EVENTS
+        bridge.MAX_EVENTS = 2
+        try:
+            job = bridge.ChatJob("limited", {"model": "m"})
+            job.add("a", "")
+            job.add("b", "")
+            job.add("c", "")
+            self.assertEqual(len(job.events), 2)
+            self.assertTrue(job.done)
+            self.assertIn("лимит", job.error or "")
+        finally:
+            bridge.MAX_EVENTS = old
+
     def tearDown(self) -> None:
         bridge.LMS_HOST = ""
         bridge._jobs.clear()
@@ -307,6 +334,9 @@ class BridgeTest(unittest.TestCase):
         status, second = self.request("POST", "/chat", body)
         self.assertEqual(status, 200, second)
         self.assertEqual(second["job"], "job-same")
+        deadline = time.time() + 2
+        while len(FakeLmStudio.calls) < 1 and time.time() < deadline:
+            time.sleep(0.01)
         self.assertEqual(len(FakeLmStudio.calls), 1)
 
     def test_chat_requires_token(self) -> None:

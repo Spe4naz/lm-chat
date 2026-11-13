@@ -298,4 +298,27 @@ void main() {
     expect(preview.ok, isFalse);
     expect(preview.error, isNotNull);
   });
+
+  test('profile import clamps max tokens', () {
+    AppProfile profile(int tokens) => AppProfile(
+      servers: const [],
+      promptTemplates: const [],
+      themeMode: AppThemeMode.dark,
+      appLanguage: AppLanguage.ru,
+      fontFamily: AppFontFamily.system,
+      fontScale: 1,
+      defaultTemperature: 0.7,
+      defaultTopP: 0.95,
+      defaultMaxTokens: tokens,
+      defaultSystemPrompt: '',
+      defaultResponseFormat: const ResponseFormat(),
+      defaultLaunch: const LaunchSettings(),
+    );
+
+    expect(
+      AppProfile.fromJson(profile(99999999).toJson()).defaultMaxTokens,
+      maxProfileTokens,
+    );
+    expect(AppProfile.fromJson(profile(-42).toJson()).defaultMaxTokens, -1);
+  });
 }

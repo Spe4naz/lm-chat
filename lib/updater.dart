@@ -59,6 +59,15 @@ class UpdateService extends ChangeNotifier {
   static const String _userAgent = 'lm-chat-updater';
   static const MethodChannel _updateChannel = MethodChannel('lm_chat/update');
 
+  /// Hard cap for an update asset. A malicious or corrupted release must not
+  /// fill the device's temporary storage.
+  static const int maxAssetBytes = 400 * 1024 * 1024;
+  static const Duration _downloadIdleTimeout = Duration(seconds: 60);
+  static const Duration _downloadDeadline = Duration(minutes: 20);
+  static final RegExp _windowsAssetName = RegExp(
+    r'^lm-chat-setup-\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?\.exe$',
+  );
+
   final http.Client _client;
   final bool _ownsClient;
   final String? _currentVersionOverride;
@@ -147,7 +156,8 @@ class UpdateService extends ChangeNotifier {
       );
       await updateDirectory.create(recursive: true);
       final file = File(
-        '${updateDirectory.path}${Platform.pathSeparator}${info.assetName}',
+        '${updateDirectory.path}${Platform.pathSeparator}'
+        '${info.assetName.split(RegExp(r'[\\/]')).last}',
       );
       if (!await _fileMatches(file, info)) {
         await _download(info, file, onProgress: onProgress);
@@ -205,6 +215,9 @@ class UpdateService extends ChangeNotifier {
     File file, {
     void Function(double value)? onProgress,
   }) async {
+    if (info.assetSize > maxAssetBytes) {
+      throw const UpdateException('Файл обновления слишком большой.');
+    }
     if (await file.exists()) {
       await file.delete();
     }
@@ -218,20 +231,38 @@ class UpdateService extends ChangeNotifier {
         'Не удалось скачать обновление (HTTP ${response.statusCode}).',
       );
     }
-    final total = response.contentLength ?? info.assetSize;
+    final contentLength = response.contentLength;
+    if (contentLength != null && contentLength > maxAssetBytes) {
+      throw const UpdateException('Файл обновления слишком большой.');
+    }
+    if (contentLength != null &&
+        info.assetSize > 0 &&
+        contentLength != info.assetSize) {
+      throw const UpdateException(
+        'Размер файла обновления не совпал с релизом.',
+      );
+    }
+    final expected = info.assetSize > 0 ? info.assetSize : contentLength ?? 0;
+    final deadline = DateTime.now().add(_downloadDeadline);
     final sink = file.openWrite();
     final digestSink = _DigestSink();
     final digestInput = sha256.startChunkedConversion(digestSink);
     var received = 0;
     try {
-      await for (final chunk in response.stream.timeout(
-        const Duration(seconds: 60),
-      )) {
+      await for (final chunk in response.stream.timeout(_downloadIdleTimeout)) {
+        if (DateTime.now().isAfter(deadline)) {
+          throw TimeoutException(
+            'Загрузка обновления заняла слишком много времени.',
+          );
+        }
+        received += chunk.length;
+        if (received > maxAssetBytes) {
+          throw const UpdateException('Файл обновления слишком большой.');
+        }
         digestInput.add(chunk);
         sink.add(chunk);
-        received += chunk.length;
-        if (total > 0) {
-          progress = (received / total).clamp(0.0, 1.0);
+        if (expected > 0) {
+          progress = (received / expected).clamp(0.0, 1.0);
           onProgress?.call(progress);
           notifyListeners();
         }
@@ -248,6 +279,12 @@ class UpdateService extends ChangeNotifier {
       if (await file.exists()) await file.delete();
       rethrow;
     }
+    if (expected > 0 && received != expected) {
+      if (await file.exists()) await file.delete();
+      throw const UpdateException(
+        'Размер файла обновления не совпал с релизом.',
+      );
+    }
     final digest = digestSink.value?.toString().toLowerCase();
     if (digest == null || digest != info.sha256.toLowerCase()) {
       if (await file.exists()) await file.delete();
@@ -260,7 +297,9 @@ class UpdateService extends ChangeNotifier {
 
   Future<bool> _fileMatches(File file, UpdateInfo info) async {
     if (!await file.exists()) return false;
-    if (info.assetSize > 0 && await file.length() != info.assetSize) {
+    final length = await file.length();
+    if (length > maxAssetBytes) return false;
+    if (info.assetSize > 0 && length != info.assetSize) {
       return false;
     }
     final digest = await _sha256File(file);
@@ -279,6 +318,17 @@ class UpdateService extends ChangeNotifier {
 
   Future<void> _installAndroid(File file) async {
     try {
+      final signatureMatches =
+          await _updateChannel.invokeMethod<bool>('verifyApkSignature', {
+            'path': file.path,
+          }) ??
+          false;
+      if (!signatureMatches) {
+        throw const UpdateException(
+          'Подпись APK не совпадает с установленным приложением. '
+          'Скачайте обновление со страницы релиза.',
+        );
+      }
       final canInstall =
           await _updateChannel.invokeMethod<bool>('canInstallPackages') ?? true;
       if (!canInstall) {
@@ -308,6 +358,7 @@ class UpdateService extends ChangeNotifier {
         'Это portable-сборка. Скачайте новый ZIP со страницы релиза.',
       );
     }
+    await _verifyWindowsSignature(file);
     final directory = await getTemporaryDirectory();
     final script = File(
       '${directory.path}${Platform.pathSeparator}lm_chat_update.ps1',
@@ -341,6 +392,37 @@ class UpdateService extends ChangeNotifier {
     exit(0);
   }
 
+  static const String _windowsPublisher = String.fromEnvironment(
+    'LM_CHAT_WINDOWS_PUBLISHER',
+  );
+
+  Future<void> _verifyWindowsSignature(File file) async {
+    final quoted = "'${file.path.replaceAll("'", "''")}'";
+    final command =
+        '\$s = Get-AuthenticodeSignature -LiteralPath $quoted; '
+        'if (\$s.Status -ne "Valid") { Write-Output "invalid"; exit 2 }; '
+        'Write-Output \$s.SignerCertificate.Subject';
+    final result = await Process.run('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      command,
+    ]).timeout(const Duration(seconds: 30));
+    final subject = result.stdout.toString().trim();
+    if (result.exitCode != 0 || subject.isEmpty) {
+      throw const UpdateException(
+        'Установщик обновления не подписан или подпись повреждена. '
+        'Скачайте обновление со страницы релиза.',
+      );
+    }
+    if (_windowsPublisher.isNotEmpty &&
+        !subject.toLowerCase().contains(_windowsPublisher.toLowerCase())) {
+      throw const UpdateException(
+        'Установщик подписан другим издателем. Скачайте обновление со страницы релиза.',
+      );
+    }
+  }
+
   static UpdateInfo? parseRelease(
     Map<String, dynamic> release, {
     required String platform,
@@ -363,9 +445,20 @@ class UpdateService extends ChangeNotifier {
       throw UpdateException('В релизе $tag нет файла для платформы $platform.');
     }
     final name = asset['name'] as String? ?? '';
+    if (!_isSafeAssetName(name, platform)) {
+      throw UpdateException('Недопустимое имя файла обновления: $name');
+    }
     final url = Uri.tryParse(asset['browser_download_url'] as String? ?? '');
-    if (url == null) {
-      throw const UpdateException('В релизе нет ссылки на файл обновления.');
+    if (url == null ||
+        url.scheme != 'https' ||
+        !const {'github.com', 'www.github.com'}.contains(url.host)) {
+      throw const UpdateException(
+        'В релизе нет безопасной ссылки на файл обновления.',
+      );
+    }
+    final size = (asset['size'] as num?)?.toInt() ?? 0;
+    if (size > maxAssetBytes) {
+      throw const UpdateException('Файл обновления слишком большой.');
     }
     final digest =
         _digestFromAsset(asset) ??
@@ -380,9 +473,18 @@ class UpdateService extends ChangeNotifier {
       htmlUrl: Uri.tryParse(release['html_url'] as String? ?? '') ?? url,
       assetName: name,
       assetUrl: url,
-      assetSize: (asset['size'] as num?)?.toInt() ?? 0,
+      assetSize: size,
       sha256: digest.toLowerCase(),
     );
+  }
+
+  static bool _isSafeAssetName(String name, String platform) {
+    if (name.isEmpty || name.contains('/') || name.contains(r'\')) {
+      return false;
+    }
+    if (platform == 'android') return name == 'lm-chat-universal.apk';
+    if (platform == 'windows') return _windowsAssetName.hasMatch(name);
+    return false;
   }
 
   static Map<String, dynamic>? _selectAsset(
