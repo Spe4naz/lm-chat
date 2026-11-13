@@ -638,7 +638,10 @@ class L10n {
     'Неверный токен мостика (401)': 'Invalid bridge token (401)',
     'Мостик не найден (404). Проверьте адрес и обновите lms_gpu_bridge.py.': 'Bridge not found (404). Check the address and update lms_gpu_bridge.py.',
     'Ошибка {code}{detail}': 'Error {code}{detail}',
-    'Неверный API-токен (401)': 'Invalid API token (401)',
+    'Неверный или отсутствующий API-токен LM Studio (401). '
+            'Укажите токен в настройках сервера.':
+        'Missing or invalid LM Studio API token (401). '
+        'Set the token in the server settings.',
     'Доступ запрещён (403)': 'Access denied (403)',
     'Метод не найден (404). Возможно, LM Studio старше 0.4.0.':
         'Endpoint not found (404). LM Studio may be older than 0.4.0.',

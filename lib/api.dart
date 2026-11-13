@@ -623,7 +623,7 @@ class LmClient {
 
         final error = decoded['error'];
         if (error is String && error.trim().isNotEmpty) {
-          throw ApiException(error.trim());
+          throw ApiException(bridgeAuthHint(error.trim()));
         }
 
         final usage = decoded['usage'];
@@ -1010,7 +1010,10 @@ String _httpError(int code, String body) {
   if (detail.length > 300) detail = '${detail.substring(0, 300)}…';
   switch (code) {
     case 401:
-      return L10n.t('Неверный API-токен (401)');
+      return L10n.t(
+        'Неверный или отсутствующий API-токен LM Studio (401). '
+        'Укажите токен в настройках сервера.',
+      );
     case 403:
       return L10n.t('Доступ запрещён (403)');
     case 404:
@@ -1021,6 +1024,22 @@ String _httpError(int code, String body) {
         'detail': detail.isEmpty ? '' : ': $detail',
       });
   }
+}
+
+/// Adds an actionable hint when LM Studio rejects a bridge request because the
+/// bridge process runs without the LM Studio API token.
+///
+/// The bridge calls `/v1/chat/completions` on behalf of the app, so enabling
+/// authentication in LM Studio breaks bridge chat until the token is passed to
+/// the bridge as `LMS_API_KEY`.
+String bridgeAuthHint(String message) {
+  final lower = message.toLowerCase();
+  final authProblem =
+      lower.contains('api token') || lower.contains('authorization');
+  if (!authProblem) return message;
+  return '$message\n\n'
+      'Мостик обращается к LM Studio без токена. Отключите «Чат через мост» '
+      'в настройках сервера или задайте LMS_API_KEY в сервисе lms-gpu-bridge.';
 }
 
 /// Builds a ready-to-run `lms load` command for manual GPU offload.

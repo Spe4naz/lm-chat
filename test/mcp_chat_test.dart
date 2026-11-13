@@ -157,6 +157,22 @@ void main() {
     });
   });
 
+  group('bridgeAuthHint', () {
+    test('adds guidance when LM Studio rejects the bridge token', () {
+      const upstream =
+          'An LM Studio API token is required to make requests to '
+          'this server, but none was provided using the Authorization header.';
+      final message = bridgeAuthHint(upstream);
+      expect(message, contains('LMS_API_KEY'));
+      expect(message, contains('Чат через мост'));
+    });
+
+    test('leaves unrelated errors untouched', () {
+      const upstream = 'Model not found';
+      expect(bridgeAuthHint(upstream), upstream);
+    });
+  });
+
   group('ServerConfig MCP fields', () {
     test('are off by default and survive a JSON round trip', () {
       final server = ServerConfig(

@@ -175,6 +175,14 @@ class GenerationController {
           'Мостик не поддерживает чат — обновите lms_gpu_bridge.py, '
           'чтобы ответ готовился в фоне.',
         );
+      } on ApiException catch (error) {
+        // LM Studio now requires a token, but the bridge was started without
+        // one. Nothing was generated yet, so answer through the direct API.
+        if (started || !error.message.contains('LMS_API_KEY')) rethrow;
+        _bridgeChatDisabled.add(server.id);
+        onBridgeUnsupported(
+          'Мостик не передаёт токен LM Studio — чат идёт напрямую.',
+        );
       }
     }
     yield* client.streamChat(
