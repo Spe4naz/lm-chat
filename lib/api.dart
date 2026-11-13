@@ -38,7 +38,13 @@ class ChatUsage {
 }
 
 class ChatChunk {
-  const ChatChunk(this.content, this.reasoning, {this.usage, this.elapsedMs});
+  const ChatChunk(
+    this.content,
+    this.reasoning, {
+    this.usage,
+    this.elapsedMs,
+    this.tool = '',
+  });
 
   final String content;
   final String reasoning;
@@ -48,6 +54,10 @@ class ChatChunk {
 
   /// Server-side generation time of a bridge job, in milliseconds.
   final int? elapsedMs;
+
+  /// Name of a tool the model invoked, reported by the native `/api/v1/chat`
+  /// stream. Carries no text of its own.
+  final String tool;
 }
 
 class ModelLoadResult {
@@ -757,6 +767,85 @@ class LmClient {
       }
     }
   }
+
+  /// Streams a chat through LM Studio's native `/api/v1/chat` endpoint, which
+  /// is the only one accepting `integrations` and therefore the only one where
+  /// the model can call plugin/MCP tools.
+  ///
+  /// LM Studio executes the tools itself and reports them as `tool_call`
+  /// events, so the app only has to forward the final text.
+  Stream<ChatChunk> streamChatWithMcp({
+    required ServerConfig server,
+    required String model,
+    required List<Map<String, dynamic>> messages,
+    required String integrationId,
+    required double temperature,
+    required double topP,
+    int topK = 0,
+    double repeatPenalty = 1.0,
+    required int maxTokens,
+    int? contextLength,
+  }) async* {
+    _ensureBaseSafe(server);
+    final request = http.Request('POST', server.apiV1('chat'));
+    _headers(server).forEach((key, value) => request.headers[key] = value);
+    request.headers['Accept'] = 'text/event-stream';
+    request.body = jsonEncode(
+      buildMcpChatBody(
+        model: model,
+        messages: messages,
+        integrationId: integrationId,
+        temperature: temperature,
+        topP: topP,
+        topK: topK,
+        repeatPenalty: repeatPenalty,
+        maxTokens: maxTokens,
+        contextLength: contextLength,
+      ),
+    );
+
+    final response = await _http
+        .send(request)
+        .timeout(const Duration(seconds: 60));
+    if (response.statusCode != 200) {
+      final body = await response.stream.bytesToString();
+      throw ApiException(_httpError(response.statusCode, body));
+    }
+
+    final lines = response.stream
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .timeout(
+          idleTimeout,
+          onTimeout: (sink) {
+            sink.addError(
+              ApiException(
+                'Сервер перестал присылать события. '
+                'Проверьте LM Studio и подключение к сети.',
+              ),
+            );
+            sink.close();
+          },
+        );
+
+    await for (final line in lines) {
+      final trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      final payload = trimmed.substring(5).trim();
+      if (payload.isEmpty) continue;
+
+      final Map<String, dynamic> json;
+      try {
+        json = jsonDecode(payload) as Map<String, dynamic>;
+      } catch (_) {
+        continue;
+      }
+
+      final chunk = mcpChunkFromEvent(json);
+      if (chunk != null) yield chunk;
+      if (json['type'] == 'chat.end') break;
+    }
+  }
 }
 
 /// One place for the OpenAI-compatible request body. Direct LM Studio and the
@@ -787,6 +876,114 @@ Map<String, dynamic> _chatRequestBody({
   ...?format?.requestFields(),
   'job': ?job,
 };
+
+/// Body for LM Studio's native `/api/v1/chat`.
+///
+/// The native endpoint takes a single `input` plus an optional `system_prompt`
+/// instead of a `messages` array, so the app's history is folded into a plain
+/// transcript. The last user turn becomes the actual input: it keeps tool
+/// calls and replies readable by the model.
+Map<String, dynamic> buildMcpChatBody({
+  required String model,
+  required List<Map<String, dynamic>> messages,
+  required String integrationId,
+  required double temperature,
+  required double topP,
+  int topK = 0,
+  double repeatPenalty = 1.0,
+  required int maxTokens,
+  int? contextLength,
+}) {
+  final system = <String>[];
+  final turns = <MapEntry<String, String>>[];
+  for (final message in messages) {
+    final role = message['role']?.toString() ?? 'user';
+    final content = message['content']?.toString().trim() ?? '';
+    if (content.isEmpty) continue;
+    if (role == 'system') {
+      system.add(content);
+    } else if (role == 'assistant') {
+      turns.add(MapEntry('Ассистент', content));
+    } else {
+      turns.add(MapEntry('Пользователь', content));
+    }
+  }
+
+  var input = '';
+  if (turns.isNotEmpty && turns.last.key == 'Пользователь') {
+    input = turns.removeLast().value;
+  }
+  final transcript = turns
+      .map((turn) => '${turn.key}: ${turn.value}')
+      .join('\n');
+  final systemPrompt = [
+    ...system,
+    if (transcript.isNotEmpty) 'История диалога:\n$transcript',
+  ].join('\n\n');
+
+  return {
+    'model': model,
+    'input': input.isEmpty ? 'Продолжи диалог.' : input,
+    if (systemPrompt.isNotEmpty) 'system_prompt': systemPrompt,
+    'integrations': [
+      {'type': 'plugin', 'id': integrationId},
+    ],
+    'stream': true,
+    // Do not keep server-side copies of the conversation.
+    'store': false,
+    'temperature': temperature,
+    'top_p': topP,
+    if (topK > 0) 'top_k': topK,
+    if (repeatPenalty > 1.0) 'repeat_penalty': repeatPenalty,
+    if (maxTokens > 0) 'max_output_tokens': maxTokens,
+    if (contextLength != null && contextLength > 0)
+      'context_length': contextLength,
+  };
+}
+
+/// Converts one SSE payload of `/api/v1/chat` into a [ChatChunk].
+///
+/// Returns null for events that carry nothing to display. Server-side errors
+/// are raised so the caller can surface them like any other API failure.
+ChatChunk? mcpChunkFromEvent(Map<String, dynamic> json) {
+  switch (json['type']) {
+    case 'message.delta':
+      return ChatChunk(json['content']?.toString() ?? '', '');
+    case 'reasoning.delta':
+      return ChatChunk('', json['content']?.toString() ?? '');
+    case 'tool_call.start':
+      return ChatChunk('', '', tool: json['tool']?.toString() ?? '');
+    case 'tool_call.failure':
+      final name =
+          json['tool_name']?.toString() ?? json['tool']?.toString() ?? '';
+      return ChatChunk('', '', tool: name.isEmpty ? 'tool' : '$name: ошибка');
+    case 'error':
+      final error = json['error'];
+      throw ApiException(
+        error is Map
+            ? (error['message']?.toString() ?? 'Ошибка сервера')
+            : (error?.toString() ?? 'Ошибка сервера'),
+      );
+    case 'chat.end':
+      final result = json['result'];
+      final stats = result is Map ? result['stats'] : null;
+      if (stats is! Map) return null;
+      final prompt = (stats['input_tokens'] as num?)?.toInt();
+      final completion = (stats['total_output_tokens'] as num?)?.toInt();
+      if (prompt == null && completion == null) return null;
+      return ChatChunk(
+        '',
+        '',
+        usage: ChatUsage(
+          promptTokens: prompt,
+          completionTokens: completion,
+          totalTokens: (prompt ?? 0) + (completion ?? 0),
+        ),
+      );
+    default:
+      return null;
+  }
+}
 
 bool _mentionsStreamOptions(String body) {
   final text = body.toLowerCase();

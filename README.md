@@ -17,6 +17,7 @@ Android-клиент (а также приложение для Windows) для 
 - [Обновление приложения](https://github.com/Spe4naz/lm-chat/wiki/Updating)
 - [Настройка LM Studio](https://github.com/Spe4naz/lm-chat/wiki/LM-Studio)
 - [Мостик к `lms`](https://github.com/Spe4naz/lm-chat/wiki/Bridge)
+- [MCP-инструменты](https://github.com/Spe4naz/lm-chat/wiki/MCP)
 - [Частые вопросы](https://github.com/Spe4naz/lm-chat/wiki/FAQ)
 - [Устранение неполадок](https://github.com/Spe4naz/lm-chat/wiki/Troubleshooting)
 - [Безопасность](https://github.com/Spe4naz/lm-chat/wiki/Security)

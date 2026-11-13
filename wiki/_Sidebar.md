@@ -5,6 +5,7 @@
 - [Updating](https://github.com/Spe4naz/lm-chat/wiki/Updating)
 - [LM-Studio](https://github.com/Spe4naz/lm-chat/wiki/LM-Studio)
 - [Bridge](https://github.com/Spe4naz/lm-chat/wiki/Bridge)
+- [MCP-инструменты](https://github.com/Spe4naz/lm-chat/wiki/MCP)
 - [FAQ](https://github.com/Spe4naz/lm-chat/wiki/FAQ)
 - [Troubleshooting](https://github.com/Spe4naz/lm-chat/wiki/Troubleshooting)
 - [Security](https://github.com/Spe4naz/lm-chat/wiki/Security)

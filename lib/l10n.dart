@@ -512,6 +512,25 @@ class L10n {
         'An updated lms_gpu_bridge.py is required.',
     'Адрес LM Studio': 'LM Studio address',
     'Работает только в локальной сети': 'Works on the local network only',
+    'MCP-инструменты': 'MCP tools',
+    'Модель вызывает инструменты плагина (файлы, команды). '
+            'Нужен LM Studio 0.4+, API-токен и разрешение на серверы '
+            'из mcp.json. Чат через мост и структурированный вывод '
+            'при этом не используются.':
+        'The model can call plugin tools (files, commands). Requires '
+            'LM Studio 0.4+, an API token and permission for mcp.json '
+            'servers. Bridge chat and structured output are not used.',
+    'ID интеграции': 'Integration ID',
+    'lmchat/lm-computer — плагин, mcp/lm-computer — сервер '
+            'из mcp.json.':
+        'lmchat/lm-computer is the plugin, mcp/lm-computer a mcp.json server.',
+    'mcp/lm-computer — сервер из mcp.json. '
+            'lmchat/lm-computer — нативный плагин.':
+        'mcp/lm-computer is a mcp.json server, '
+            'lmchat/lm-computer the native plugin.',
+    'Инструменты выполняет LM Studio, приложение только '
+            'показывает ответ.':
+        'LM Studio runs the tools; the app only shows the answer.',
     'LM Chat · 1.8.0': 'LM Chat · 1.8.0',
 
     // ------------------------------------------------------------ model dialog

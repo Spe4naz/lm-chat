@@ -113,8 +113,14 @@ P0 и P1 закрыты в исходниках, большинство P2 — �
   `/api/shutdown`.
 - Zenity: таймер перепроверяет активность приложения, пока запрос в очереди.
 - Systemd: `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`,
-  `ProtectControlGroups`, `ProtectKernelTunables`, `ProtectKernelModules`,
-  `ProtectClock`, `RestrictSUIDSGID`, `RestrictAddressFamilies`, `UMask=0077`.
+  `ProtectControlGroups`, `ProtectKernelTunables`, `RestrictSUIDSGID`,
+  `RestrictAddressFamilies`, `UMask=0077`. `ProtectKernelModules` и
+  `ProtectClock` убраны: в `systemd --user` они дают
+  `Failed to drop capabilities`.
+- MCP-инструменты в приложении: при включённом переключателе чат идёт через
+  нативный `/api/v1/chat` с `integrations`, инструменты выполняет LM Studio.
+  Без моста и структурированного вывода. Тесты: `test/mcp_chat_test.dart`,
+  страница вики `MCP`.
 - Audit: маскирование bearer-токенов, паролей, API-ключей и URL userinfo;
   ротация `audit.jsonl` после 5 МБ.
 - CORS выключен по умолчанию; Origin отражается только из

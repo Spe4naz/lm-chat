@@ -59,6 +59,8 @@ class ServerConfig {
     this.bridgeUrl = '',
     this.bridgeToken = '',
     this.chatViaBridge = true,
+    this.mcpEnabled = false,
+    this.mcpIntegrationId = defaultMcpIntegrationId,
   });
 
   final String id;
@@ -74,6 +76,25 @@ class ServerConfig {
   /// Send chat requests through the bridge so the answer is generated on the
   /// server and survives the app being backgrounded or killed.
   bool chatViaBridge;
+
+  /// Let the model call LM Studio tools (plugins/MCP) during a chat.
+  ///
+  /// Tools are only executable through the native `/api/v1/chat` endpoint: the
+  /// OpenAI-compatible endpoint ignores `integrations` and the model then
+  /// invents tool results. Enabling this switches chat traffic to the native
+  /// endpoint, so bridge jobs and structured output are unavailable.
+  bool mcpEnabled;
+
+  /// Integration id shown in LM Studio: `mcp/<server>` for a server declared in
+  /// `mcp.json` (works through the API) or `lmchat/lm-computer` for the native
+  /// plugin, which LM Studio currently refuses to run on API requests.
+  String mcpIntegrationId;
+
+  /// A `mcp.json` server is the only integration LM Studio currently allows
+  /// over the REST API; the native plugin id is rejected with 403.
+  static const String defaultMcpIntegrationId = 'mcp/lm-computer';
+
+  bool get hasMcp => mcpEnabled && mcpIntegrationId.trim().isNotEmpty;
 
   /// Accepts `192.168.1.5:1234`, `http://host:1234/` or `http://host:1234/v1`.
   String get normalizedBase {
@@ -222,6 +243,9 @@ class ServerConfig {
     if (bridgeUrl.isNotEmpty) 'bridgeUrl': bridgeUrl,
     if (includeSecrets && bridgeToken.isNotEmpty) 'bridgeToken': bridgeToken,
     if (!chatViaBridge) 'chatViaBridge': false,
+    if (mcpEnabled) 'mcpEnabled': true,
+    if (mcpEnabled && mcpIntegrationId != defaultMcpIntegrationId)
+      'mcpIntegrationId': mcpIntegrationId,
   };
 
   factory ServerConfig.fromJson(Map<String, dynamic> json) => ServerConfig(
@@ -232,6 +256,9 @@ class ServerConfig {
     bridgeUrl: json['bridgeUrl'] as String? ?? '',
     bridgeToken: json['bridgeToken'] as String? ?? '',
     chatViaBridge: json['chatViaBridge'] as bool? ?? true,
+    mcpEnabled: json['mcpEnabled'] as bool? ?? false,
+    mcpIntegrationId:
+        json['mcpIntegrationId'] as String? ?? defaultMcpIntegrationId,
   );
 
   ServerConfig clone() => ServerConfig(
@@ -242,6 +269,8 @@ class ServerConfig {
     bridgeUrl: bridgeUrl,
     bridgeToken: bridgeToken,
     chatViaBridge: chatViaBridge,
+    mcpEnabled: mcpEnabled,
+    mcpIntegrationId: mcpIntegrationId,
   );
 }
 

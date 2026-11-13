@@ -103,6 +103,25 @@ class GenerationController {
     required void Function(String message) onBridgeUnsupported,
     void Function()? onJobChanged,
   }) async* {
+    // Tools are only executed by the native endpoint; bridge jobs and
+    // structured output stay on the OpenAI-compatible one.
+    final useMcp = server.hasMcp && !chat.responseFormat.isStructured;
+    if (useMcp) {
+      yield* client.streamChatWithMcp(
+        server: server,
+        model: chat.model,
+        messages: history,
+        integrationId: server.mcpIntegrationId.trim(),
+        temperature: chat.temperature,
+        topP: chat.topP,
+        topK: chat.topK,
+        repeatPenalty: chat.repeatPenalty,
+        maxTokens: chat.maxTokens,
+        contextLength: chat.launch.contextLength,
+      );
+      return;
+    }
+
     var useBridge =
         server.hasBridge &&
         server.chatViaBridge &&

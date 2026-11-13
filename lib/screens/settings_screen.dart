@@ -1120,6 +1120,8 @@ class _ServerEditDialogState extends State<ServerEditDialog> {
   late final TextEditingController _key;
   late final TextEditingController _bridgeToken;
   late bool _chatViaBridge;
+  late bool _mcpEnabled;
+  late final TextEditingController _mcpIntegration;
 
   /// Bridge address stored with the server. When the bridge is enabled from
   /// this dialog, it is derived from the server address; for existing servers
@@ -1147,6 +1149,10 @@ class _ServerEditDialogState extends State<ServerEditDialog> {
       text: widget.server?.bridgeToken ?? '',
     );
     _chatViaBridge = widget.server?.chatViaBridge ?? true;
+    _mcpEnabled = widget.server?.mcpEnabled ?? false;
+    _mcpIntegration = TextEditingController(
+      text: widget.server?.mcpIntegrationId ?? ServerConfig.defaultMcpIntegrationId,
+    );
   }
 
   @override
@@ -1155,6 +1161,7 @@ class _ServerEditDialogState extends State<ServerEditDialog> {
     _url.dispose();
     _key.dispose();
     _bridgeToken.dispose();
+    _mcpIntegration.dispose();
     super.dispose();
   }
 
@@ -1209,6 +1216,10 @@ class _ServerEditDialogState extends State<ServerEditDialog> {
     bridgeUrl: _effectiveBridgeUrl,
     bridgeToken: _bridgeToken.text.trim(),
     chatViaBridge: _chatViaBridge,
+    mcpEnabled: _mcpEnabled,
+    mcpIntegrationId: _mcpIntegration.text.trim().isEmpty
+        ? ServerConfig.defaultMcpIntegrationId
+        : _mcpIntegration.text.trim(),
   );
 
   void _save() {
@@ -1431,6 +1442,45 @@ class _ServerEditDialogState extends State<ServerEditDialog> {
                   'Нужен обновлённый lms_gpu_bridge.py.',
                 ),
               ),
+            const Divider(height: 24),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _mcpEnabled,
+              onChanged: (value) => setState(() => _mcpEnabled = value),
+              title: Text(L10n.t('MCP-инструменты')),
+              subtitle: Text(
+                L10n.t(
+                  'Модель вызывает инструменты плагина (файлы, команды). '
+                  'Нужен LM Studio 0.4+, API-токен и разрешение на серверы '
+                  'из mcp.json. Чат через мост и структурированный вывод '
+                  'при этом не используются.',
+                ),
+              ),
+            ),
+            if (_mcpEnabled) ...[
+              TextField(
+                controller: _mcpIntegration,
+                decoration: InputDecoration(
+                  labelText: L10n.t('ID интеграции'),
+                  helperText: L10n.t(
+                    'mcp/lm-computer — сервер из mcp.json. '
+                    'lmchat/lm-computer — нативный плагин.',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  L10n.t('Инструменты выполняет LM Studio, приложение только '
+                      'показывает ответ.'),
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 4),
             Align(
               alignment: Alignment.centerLeft,

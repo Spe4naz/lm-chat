@@ -1,0 +1,90 @@
+# MCP-инструменты
+
+LM Chat умеет отдавать модели инструменты плагина
+[lm-computer](https://github.com/Spe4naz/lm-computer/wiki): создание файлов,
+чтение каталогов, запуск команд. Инструменты выполняет сам LM Studio, приложение
+только показывает ответ.
+
+## Как включить
+
+1. Установите LM Studio 0.4 или новее и плагин `lm-computer`.
+2. В LM Studio: **Developer → Server Settings**:
+   - включите **Require Authentication** и создайте API-токен
+     (**Manage Tokens → Create Token**, права `pluginUse: allowAll`);
+   - включите **Allow calling servers from mcp.json**.
+3. В `mcp.json` LM Studio (**Program → Install → Edit mcp.json**) добавьте сервер:
+
+```json
+{
+  "mcpServers": {
+    "lm-computer": {
+      "url": "http://127.0.0.1:1237/mcp",
+      "headers": {
+        "Authorization": "Bearer <токен из ~/.config/lm-computer/token.txt>"
+      }
+    }
+  }
+}
+```
+
+4. В LM Chat: **Настройки → сервер → MCP-инструменты**, включите переключатель.
+   ID интеграции по умолчанию — `mcp/lm-computer`.
+5. Укажите тот же API-токен в поле «Токен» профиля сервера: без него LM Studio
+   отвечает `401`.
+
+## Что происходит при запросе
+
+Приложение отправляет чат в нативный эндпоинт `POST /api/v1/chat` с полем
+`integrations`. Это единственный эндпоинт, который принимает инструменты:
+OpenAI-совместимый `/v1/chat/completions` молча игнорирует `integrations`, и
+модель начинает выдумывать результаты вызовов.
+
+LM Studio сам вызывает инструмент и возвращает поток событий
+(`tool_call.start`, `tool_call.success`, `message.delta`, `chat.end`).
+Приложение складывает `message.delta` в ответ, а `chat.end` использует для
+статистики токенов.
+
+## Ограничения
+
+- **Чат через мост не используется**: мост работает через
+  `/v1/chat/completions` и не умеет инструменты. При включённых MCP-инструментах
+  запросы идут напрямую в LM Studio.
+- **Структурированный вывод** (JSON-схема, GBNF) тоже отключается: нативный
+  эндпоинт его не поддерживает, поэтому в этом режиме приложение возвращается к
+  OpenAI-совместимому пути.
+- **История** отправляется как системный промт с расшифровкой диалога, а
+  последняя реплика пользователя — как `input`. Сообщения не хранятся на сервере
+  (`store: false`).
+- **Подтверждения** выполняет плагин: либо `zenity` на машине с LM Studio, либо
+  авто-подтверждение, включённое в приложении.
+
+## Если пришло `403 Permission denied to use plugin`
+
+Проверьте по порядку:
+
+- включено **Require Authentication** и запрос идёт с API-токеном;
+- включено **Allow calling servers from mcp.json**;
+- сервер есть в `mcp.json`, а его `url` — `http://127.0.0.1:1237/mcp`;
+- ID интеграции совпадает с именем сервера: `mcp/lm-computer`;
+- после правки `mcp.json` LM Studio перезапущен.
+
+ID `lmchat/lm-computer` (нативный плагин) LM Studio сейчас отклоняет на
+API-запросах, поэтому в приложении по умолчанию используется `mcp/lm-computer`.
+
+## Проверка без приложения
+
+```bash
+curl -sN http://127.0.0.1:1234/api/v1/chat \
+  -H "Authorization: Bearer $LM_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3.5-9b",
+    "input": "Создай папку demo через fs_mkdir",
+    "integrations": [{"type": "plugin", "id": "mcp/lm-computer"}],
+    "stream": true,
+    "store": false
+  }'
+```
+
+В потоке должен появиться `tool_call.success` с выводом инструмента, а папка —
+в рабочем каталоге плагина (`~/lm-chat-computer` по умолчанию).
