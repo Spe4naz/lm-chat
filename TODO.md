@@ -17,14 +17,12 @@ P0 и P1 закрыты в исходниках, большинство P2 — �
       внутри приложения. Полное решение: HTTPS или локальный reverse proxy для
       LM Studio/мостика.
 
-- [ ] **Настроить release-подпись.** Исходники готовы: release APK без
-      `android/key.properties` не собирается, APK проверяется по сертификату,
-      Windows installer — по Authenticode. Осталось создать keystore и
-      сертификат, добавить их в локальную/CI-сборку и задать
-      `LMCHAT_SIGN_CERT` для `build_windows_installer.ps1`.
-
-- [ ] **Выпустить приложение 1.8.2.** Собранный debug APK проверен, release
-      ожидаемо требует keystore. Установленные APK/EXE пока остаются на 1.8.0.
+- [ ] **Подписать Windows-установщик.** Android уже подписан release-ключом, а
+      сертификата для Windows нет: `lm-chat-setup-1.8.2.exe` опубликован без
+      Authenticode, поэтому встроенное автообновление его отклоняет и
+      Windows-пользователи ставят вручную. Нужен сертификат (или бесплатный
+      вариант для OSS), затем `LMCHAT_SIGN_CERT` для
+      `build_windows_installer.ps1`.
 
 - [ ] **Обновить плагин на Ubuntu.** Хост `192.168.0.183` был недоступен;
       после включения: `cd ~/lm-computer && git pull && ./install.sh`, затем
@@ -97,6 +95,11 @@ P0 и P1 закрыты в исходниках, большинство P2 — �
   `/usr/bin/sudo`, `env sudo` и `bash -c 'sudo …'`; документация прямо
   называет denylist защитой от случайностей, а не sandbox.
 - Импорт истории больше не доверяет серверам и токенам из файла.
+- Release 1.8.2: keystore создан (RSA 4096, alias `lm-chat`, действителен до
+  2054), APK собран и проверен `apksigner` (SHA-256 сертификата
+  `EE:F4:4E:CB:45:6A:A3:CB:04:99:92:1F:E7:1C:96:9A:5F:75:0B:0B:D9:D0:8C:79:7B:C6:2E:39:4B:99:A1:FD`),
+  релиз `v1.8.2` опубликован с `lm-chat-universal.apk`,
+  `lm-chat-setup-1.8.2.exe` и portable ZIP.
 
 ### P2 — средний приоритет
 
@@ -148,7 +151,8 @@ P0 и P1 закрыты в исходниках, большинство P2 — �
 - плагин: `npm run build`, `npm test` — **43/43**;
 - Python: `pytest tools/test_lms_gpu_bridge.py` — **19/19**;
 - `flutter build apk --debug` — успешно;
-- `flutter build apk --release` — ожидаемо падает без keystore;
+- `flutter build apk --release` — успешно с release-keystore, `apksigner` OK;
+- `flutter build windows --release` + Inno Setup — `lm-chat-setup-1.8.2.exe`;
 - `npm audit`: 2 high (`zod` 3 и `@lmstudio/sdk`), критичных нет.
 
 Пути `src/core/...`, `install.sh`, `start.sh`, `stop.sh` и `prompts/...`
