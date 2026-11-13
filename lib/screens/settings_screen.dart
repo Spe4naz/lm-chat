@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../api.dart';
 import '../app_state.dart';
+import '../app_version.dart';
 import '../format_utils.dart';
 import '../l10n_text.dart';
 import '../models.dart';
@@ -477,7 +478,7 @@ class SettingsScreen extends StatelessWidget {
               const SizedBox(height: 18),
               Center(
                 child: Text(
-                  'LM Chat · 1.8.0\nРаботает только в локальной сети',
+                  'LM Chat · $appVersionLabel\nРаботает только в локальной сети',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 12,

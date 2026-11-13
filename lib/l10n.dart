@@ -531,7 +531,6 @@ class L10n {
     'Инструменты выполняет LM Studio, приложение только '
             'показывает ответ.':
         'LM Studio runs the tools; the app only shows the answer.',
-    'LM Chat · 1.8.0': 'LM Chat · 1.8.0',
 
     // ------------------------------------------------------------ model dialog
     'Запуск по умолчанию': 'Default launch',
@@ -552,7 +551,6 @@ class L10n {
     'Лог хранится только в памяти и очищается при':
         'The log is kept in memory and cleared when',
     'закрытии приложения.': 'the app is closed.',
-    'LM Chat 1.8.0': 'LM Chat 1.8.0',
 
     // ------------------------------------------------------------ import
     '{count} сервер(ов)': '{count} server(s)',

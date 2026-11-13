@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../app_log.dart';
 import '../app_state.dart';
+import '../app_version.dart';
 import '../l10n_text.dart';
 import '../theme.dart';
 
@@ -77,9 +78,9 @@ class DiagnosticsScreen extends StatelessWidget {
                                 ? '0'
                                 : '${state.modelsFor(server.id).length}',
                           ),
-                          const _InfoRow(
+                          _InfoRow(
                             label: 'Версия',
-                            value: 'LM Chat 1.8.0',
+                            value: 'LM Chat $appVersionLabel',
                           ),
                           const SizedBox(height: 4),
                           Text(
