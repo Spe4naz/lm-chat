@@ -948,7 +948,9 @@ class _ToolCallTileState extends State<_ToolCallTile> {
         : call.isRunning
         ? scheme.primary
         : AppColors.of(context).success;
-    final title = call.name.isEmpty ? L10n.t('Инструмент') : call.name;
+    final title = call.name.isEmpty
+        ? L10n.t('Инструмент')
+        : L10n.t(toolDisplayName(call.name));
     final hint = call.isFailure && call.error.isNotEmpty
         ? call.error
         : call.summary;
@@ -1024,6 +1026,18 @@ class _ToolCallTileState extends State<_ToolCallTile> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (call.name.isNotEmpty &&
+                    toolDisplayName(call.name) != call.name)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2, bottom: 2),
+                    child: Text(
+                      L10n.tf('Инструмент: {name}', {'name': call.name}),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
                 if (call.arguments.trim().isNotEmpty)
                   _ToolDetail(label: L10n.t('Аргументы'), text: call.arguments),
                 if (call.isFailure && call.error.isNotEmpty)

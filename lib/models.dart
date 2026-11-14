@@ -106,13 +106,24 @@ class ToolCallRecord {
   bool get isFailure => status == ToolCallStatus.failure;
 
   /// Short argument value used as a one-line hint in the collapsed row.
+  ///
+  /// File paths and queries are more useful than the content of a write, so
+  /// known argument names win over the first key in the JSON object.
   String get summary {
     final source = arguments.trim();
     if (source.isEmpty) return '';
     try {
       final value = jsonDecode(source);
       if (value is Map) {
+        const preferred = ['path', 'name', 'query', 'url', 'command'];
+        for (final key in preferred) {
+          final item = value[key];
+          if (item is String || item is num || item is bool) {
+            return _shorten('$key: $item');
+          }
+        }
         for (final entry in value.entries) {
+          if (entry.key == 'content' || entry.key == 'data') continue;
           final item = entry.value;
           if (item is String || item is num || item is bool) {
             return _shorten('${entry.key}: $item');
@@ -249,6 +260,25 @@ void applyToolCallEvent(List<ToolCallRecord> calls, ToolCallEvent event) {
       call.finishedAt = DateTime.now();
   }
 }
+
+/// Human-readable label for a tool name reported by LM Studio. The raw name
+/// stays available in the expanded card; tools from other servers keep it as
+/// the label because the app cannot know what they do.
+String toolDisplayName(String name) => switch (name) {
+  'computer_status' => 'Состояние',
+  'system_info' => 'Система',
+  'fs_list' => 'Просмотр',
+  'fs_read' => 'Чтение',
+  'fs_write' => 'Написание',
+  'fs_append' => 'Дополнение',
+  'fs_mkdir' => 'Создание',
+  'fs_move' => 'Перемещение',
+  'fs_delete' => 'Удаление',
+  'fs_search' => 'Поиск',
+  'open_path' => 'Открытие',
+  'shell_run' => 'Команда',
+  _ => name,
+};
 
 String titleFromPrompt(String text, {int maxLength = 48}) {
   final runes = text.runes.toList(growable: false);

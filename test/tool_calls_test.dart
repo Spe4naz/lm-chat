@@ -234,6 +234,25 @@ void main() {
     });
   });
 
+  test('tool names get a human label, unknown tools keep the raw name', () {
+    expect(toolDisplayName('fs_mkdir'), 'Создание');
+    expect(toolDisplayName('fs_write'), 'Написание');
+    expect(toolDisplayName('fs_search'), 'Поиск');
+    expect(toolDisplayName('shell_run'), 'Команда');
+    expect(toolDisplayName('model_search'), 'model_search');
+    expect(toolDisplayName(''), '');
+  });
+
+  test('the summary prefers a path over written content', () {
+    final call = ToolCallRecord(
+      name: 'fs_write',
+      arguments:
+          '{"content":"<!DOCTYPE html>","mode":"overwrite",'
+          '"path":"site1/index.html"}',
+    );
+    expect(call.summary, 'path: site1/index.html');
+  });
+
   testWidgets('the bubble lists tools and expands their details', (
     tester,
   ) async {
@@ -259,13 +278,15 @@ void main() {
     );
 
     expect(find.text('Инструменты: 1'), findsOneWidget);
-    expect(find.text('fs_mkdir'), findsOneWidget);
+    expect(find.text('Создание'), findsOneWidget);
+    expect(find.text('fs_mkdir'), findsNothing);
     expect(find.textContaining('path: lmchat-test'), findsOneWidget);
     expect(find.text('Аргументы'), findsNothing);
 
-    await tester.tap(find.text('fs_mkdir'));
+    await tester.tap(find.text('Создание'));
     await tester.pumpAndSettle();
 
+    expect(find.text('Инструмент: fs_mkdir'), findsOneWidget);
     expect(find.text('Аргументы'), findsOneWidget);
     expect(find.text('Результат'), findsOneWidget);
     expect(find.textContaining('lmchat-test'), findsWidgets);
