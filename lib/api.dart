@@ -116,11 +116,22 @@ class BridgeChatUnsupported implements Exception {
 }
 
 class LmClient {
-  LmClient({this.idleTimeout = const Duration(seconds: 120)});
+  LmClient({
+    this.idleTimeout = const Duration(minutes: 10),
+    this.responseTimeout = const Duration(minutes: 10),
+  });
 
-  /// How long to wait for the next SSE line before giving up. A server that
-  /// stops sending without closing the socket would otherwise hang forever.
+  /// How long to wait for the next byte of a streamed answer before giving up.
+  ///
+  /// LM Studio sends nothing while the model generates a large tool call: the
+  /// whole call arrives as a single event at the end. A tool call that writes a
+  /// big file can take minutes, so a short idle timeout used to close the
+  /// socket mid-answer and the server logged "Client disconnected".
   final Duration idleTimeout;
+
+  /// How long to wait for the response headers. Loading a model and processing
+  /// a long prompt can take minutes before the stream starts.
+  final Duration responseTimeout;
 
   http.Client? _client;
 
@@ -656,6 +667,22 @@ class LmClient {
         .timeout(const Duration(seconds: 10));
   }
 
+  /// Splits an SSE body into lines and applies the idle timeout to raw bytes.
+  ///
+  /// The timer must reset on any network activity, not only on a complete
+  /// line: LM Studio delivers a huge tool call as one `data:` line, so a
+  /// line-based timeout can fire while the line is still arriving.
+  Stream<String> _sseLines(http.StreamedResponse response, String message) {
+    final bytes = response.stream.timeout(
+      idleTimeout,
+      onTimeout: (sink) {
+        sink.addError(ApiException(message));
+        sink.close();
+      },
+    );
+    return bytes.transform(utf8.decoder).transform(const LineSplitter());
+  }
+
   Stream<ChatChunk> streamChat({
     required ServerConfig server,
     required String model,
@@ -687,7 +714,7 @@ class LmClient {
           includeUsage: withUsage,
         ),
       );
-      return _http.send(request).timeout(const Duration(seconds: 60));
+      return _http.send(request).timeout(responseTimeout);
     }
 
     var response = await send(withUsage: true);
@@ -707,21 +734,12 @@ class LmClient {
       throw ApiException(_httpError(response.statusCode, body));
     }
 
-    final lines = response.stream
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .timeout(
-          idleTimeout,
-          onTimeout: (sink) {
-            sink.addError(
-              ApiException(
-                'Сервер перестал присылать токены. '
-                'Проверьте LM Studio и подключение к сети.',
-              ),
-            );
-            sink.close();
-          },
-        );
+    final lines = _sseLines(
+      response,
+      'Сервер не присылал данных, пока готовил ответ. '
+      'Большой запрос или вызов инструмента мог не уложиться в таймаут. '
+      'Проверьте LM Studio и подключение к сети.',
+    );
     await for (final line in lines) {
       final trimmed = line.trim();
       if (!trimmed.startsWith('data:')) continue;
@@ -804,29 +822,18 @@ class LmClient {
       ),
     );
 
-    final response = await _http
-        .send(request)
-        .timeout(const Duration(seconds: 60));
+    final response = await _http.send(request).timeout(responseTimeout);
     if (response.statusCode != 200) {
       final body = await response.stream.bytesToString();
       throw ApiException(_httpError(response.statusCode, body));
     }
 
-    final lines = response.stream
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .timeout(
-          idleTimeout,
-          onTimeout: (sink) {
-            sink.addError(
-              ApiException(
-                'Сервер перестал присылать события. '
-                'Проверьте LM Studio и подключение к сети.',
-              ),
-            );
-            sink.close();
-          },
-        );
+    final lines = _sseLines(
+      response,
+      'Сервер не присылал событий, пока готовил ответ. '
+      'Большой запрос или вызов инструмента мог не уложиться в таймаут. '
+      'Проверьте LM Studio и подключение к сети.',
+    );
 
     await for (final line in lines) {
       final trimmed = line.trim();

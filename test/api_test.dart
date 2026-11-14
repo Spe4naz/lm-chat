@@ -22,6 +22,9 @@ void main() {
   bool rejectStreamOptions = false;
   bool rejectOtherBadRequest = false;
   bool hangStream = false;
+  bool hangMcpStream = false;
+  bool trickleMcpEvent = false;
+  String? receivedMcpBody;
   int chatRequestCount = 0;
 
   setUp(() async {
@@ -38,6 +41,9 @@ void main() {
     rejectStreamOptions = false;
     rejectOtherBadRequest = false;
     hangStream = false;
+    hangMcpStream = false;
+    trickleMcpEvent = false;
+    receivedMcpBody = null;
     chatRequestCount = 0;
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     config = ServerConfig(
@@ -218,6 +224,68 @@ void main() {
               'elapsed_ms': since >= 1 ? 1500 : null,
             }),
           );
+          await request.response.close();
+          return;
+        }
+        if (path == '/api/v1/chat' && request.method == 'POST') {
+          receivedMcpBody = await utf8.decodeStream(request);
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          request.response.bufferOutput = false;
+          void send(Map<String, dynamic> payload) {
+            request.response.write('data: ${jsonEncode(payload)}\n\n');
+          }
+
+          if (hangMcpStream) {
+            send({'type': 'chat.start'});
+            await request.response.flush();
+            // Go quiet after the first event: the client must notice.
+            await Future<void>.delayed(const Duration(seconds: 3));
+            await request.response.close();
+            return;
+          }
+          if (trickleMcpEvent) {
+            final line =
+                'data: ${jsonEncode({'type': 'message.delta', 'content': 'Готово'})}\n\n';
+            // One event arrives in many small pieces, each faster than the
+            // idle timeout, but the whole line takes longer than it.
+            for (var start = 0; start < line.length; start += 5) {
+              final end = start + 5 < line.length ? start + 5 : line.length;
+              request.response.write(line.substring(start, end));
+              await request.response.flush();
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+            }
+            send({'type': 'chat.end'});
+            await request.response.flush();
+            await request.response.close();
+            return;
+          }
+
+          send({'type': 'chat.start'});
+          send({'type': 'tool_call.start'});
+          send({'type': 'tool_call.name', 'tool_name': 'fs_mkdir'});
+          send({
+            'type': 'tool_call.arguments',
+            'tool': 'fs_mkdir',
+            'arguments': {'path': 'lmchat-test'},
+          });
+          send({
+            'type': 'tool_call.success',
+            'tool': 'fs_mkdir',
+            'arguments': {'path': 'lmchat-test'},
+            'output': '[{"type":"text","text":"created"}]',
+          });
+          send({'type': 'message.delta', 'content': 'Готово'});
+          send({
+            'type': 'chat.end',
+            'result': {
+              'stats': {'input_tokens': 10, 'total_output_tokens': 5},
+            },
+          });
+          await request.response.flush();
           await request.response.close();
           return;
         }
@@ -687,10 +755,99 @@ void main() {
         isA<ApiException>().having(
           (error) => error.message,
           'message',
-          contains('перестал присылать'),
+          contains('не присылал данных'),
         ),
       ),
     );
+  });
+
+  test('streamChatWithMcp forwards tool events and usage', () async {
+    final client = LmClient();
+    addTearDown(client.close);
+
+    final chunks = await client
+        .streamChatWithMcp(
+          server: config,
+          model: 'qwen3-8b',
+          messages: [
+            {'role': 'user', 'content': 'создай папку'},
+          ],
+          integrationId: 'mcp/lm-computer',
+          temperature: 0,
+          topP: 1,
+          maxTokens: 0,
+        )
+        .toList();
+
+    final body = jsonDecode(receivedMcpBody!) as Map<String, dynamic>;
+    expect(body['integrations'], [
+      {'type': 'plugin', 'id': 'mcp/lm-computer'},
+    ]);
+    final calls = chunks
+        .map((chunk) => chunk.toolCall)
+        .whereType<ToolCallEvent>()
+        .toList();
+    expect(calls.map((call) => call.kind), [
+      ToolCallEventKind.start,
+      ToolCallEventKind.name,
+      ToolCallEventKind.arguments,
+      ToolCallEventKind.success,
+    ]);
+    expect(calls.last.name, 'fs_mkdir');
+    expect(calls.last.output, contains('created'));
+    expect(chunks.map((chunk) => chunk.content).join(), 'Готово');
+    expect(chunks.last.usage?.totalTokens, 15);
+  });
+
+  test('streamChatWithMcp times out when the server goes quiet', () async {
+    hangMcpStream = true;
+    final client = LmClient(idleTimeout: const Duration(milliseconds: 200));
+    addTearDown(client.close);
+
+    await expectLater(
+      client
+          .streamChatWithMcp(
+            server: config,
+            model: 'qwen3-8b',
+            messages: [
+              {'role': 'user', 'content': 'привет'},
+            ],
+            integrationId: 'mcp/lm-computer',
+            temperature: 0,
+            topP: 1,
+            maxTokens: 0,
+          )
+          .toList(),
+      throwsA(
+        isA<ApiException>().having(
+          (error) => error.message,
+          'message',
+          contains('не присылал событий'),
+        ),
+      ),
+    );
+  });
+
+  test('a slowly arriving event does not trip the idle timeout', () async {
+    trickleMcpEvent = true;
+    final client = LmClient(idleTimeout: const Duration(milliseconds: 400));
+    addTearDown(client.close);
+
+    final chunks = await client
+        .streamChatWithMcp(
+          server: config,
+          model: 'qwen3-8b',
+          messages: [
+            {'role': 'user', 'content': 'привет'},
+          ],
+          integrationId: 'mcp/lm-computer',
+          temperature: 0,
+          topP: 1,
+          maxTokens: 0,
+        )
+        .toList();
+
+    expect(chunks.map((chunk) => chunk.content).join(), 'Готово');
   });
 
   test('http errors are reported with a readable message', () async {

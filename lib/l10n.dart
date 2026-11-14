@@ -667,7 +667,18 @@ class L10n {
     'Доступ запрещён (403)': 'Access denied (403)',
     'Метод не найден (404). Возможно, LM Studio старше 0.4.0.':
         'Endpoint not found (404). LM Studio may be older than 0.4.0.',
-    'Сервер перестал присылать токены. Проверьте LM Studio и подключение к сети.': 'The server stopped sending tokens. Check LM Studio and the network connection.',
+    'Сервер не присылал данных, пока готовил ответ. '
+            'Большой запрос или вызов инструмента мог не уложиться в таймаут. '
+            'Проверьте LM Studio и подключение к сети.':
+        'The server sent no data while preparing the answer. '
+        'A large request or a tool call may have exceeded the timeout. '
+        'Check LM Studio and the network connection.',
+    'Сервер не присылал событий, пока готовил ответ. '
+            'Большой запрос или вызов инструмента мог не уложиться в таймаут. '
+            'Проверьте LM Studio и подключение к сети.':
+        'The server sent no events while preparing the answer. '
+        'A large request or a tool call may have exceeded the timeout. '
+        'Check LM Studio and the network connection.',
     'Истёк таймаут ожидания ответа.': 'The response timed out.',
     'без лимита': 'no limit',
     'не задан': 'not set',
