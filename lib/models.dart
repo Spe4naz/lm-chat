@@ -180,6 +180,55 @@ class ToolCallRecord {
     return source;
   }
 
+  bool get isSuccess => status == ToolCallStatus.success;
+
+  /// Stored arguments decoded back into an object, or null when they are not a
+  /// JSON object (for example, when the text was cut at the size limit).
+  Map<String, dynamic>? get argumentValues {
+    final source = arguments.trim();
+    if (source.isEmpty) return null;
+    try {
+      final value = jsonDecode(source);
+      if (value is Map) {
+        return value.map((key, item) => MapEntry(key.toString(), item));
+      }
+    } catch (_) {
+      // Not JSON or truncated.
+    }
+    return null;
+  }
+
+  /// Path reported by `fs_write`.
+  String get filePath => argumentValues?['path']?.toString() ?? '';
+
+  /// Full content reported by `fs_write`; JSON escapes are already decoded.
+  String get fileContent => argumentValues?['content']?.toString() ?? '';
+
+  /// File name suggested in the save dialog, safe for Windows and Android.
+  String get fileName {
+    final parts = filePath
+        .split(RegExp(r'[\\/]'))
+        .where((part) => part.trim().isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return '';
+    final name = parts.last.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_');
+    return name == '.' || name == '..' ? '' : name;
+  }
+
+  /// Write mode reported by `fs_write`; the default is `overwrite`.
+  String get fileMode => argumentValues?['mode']?.toString() ?? 'overwrite';
+
+  /// True when the app can reconstruct the written file locally. Only
+  /// `fs_write` carries the complete content; `fs_append` and
+  /// `fs_write` with `mode: append` have a fragment, and a failed call must
+  /// not offer a half-written file.
+  bool get canSaveFile =>
+      isSuccess &&
+      name == 'fs_write' &&
+      fileMode != 'append' &&
+      fileContent.isNotEmpty &&
+      fileName.isNotEmpty;
+
   Map<String, dynamic> toJson() => {
     'name': name,
     if (arguments.isNotEmpty) 'arguments': arguments,

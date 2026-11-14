@@ -549,6 +549,10 @@ class L10n {
     'Аргументы': 'Arguments',
     'Результат': 'Result',
     'Инструмент выполняется…': 'Tool is running…',
+    'Сохранить файл': 'Save file',
+    'Скачать {name}': 'Download {name}',
+    'Файл сохранён: {name}': 'Saved {name}',
+    'Не удалось сохранить файл: {error}': 'Could not save the file: {error}',
 
     // ------------------------------------------------------------ model dialog
     'Запуск по умолчанию': 'Default launch',

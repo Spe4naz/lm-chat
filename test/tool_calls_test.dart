@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lm_chat/models.dart';
+import 'package:lm_chat/tool_file_saver.dart';
 import 'package:lm_chat/widgets/message_bubble.dart';
 
 void main() {
@@ -253,6 +254,52 @@ void main() {
     expect(call.summary, 'path: site1/index.html');
   });
 
+  test('fs_write exposes the full written file for download', () {
+    final call = ToolCallRecord(
+      name: 'fs_write',
+      arguments:
+          '{"content":"<!DOCTYPE html>\\n<html></html>",'
+          '"path":"site1/index.html"}',
+      status: ToolCallStatus.success,
+      finishedAt: DateTime.now(),
+    );
+
+    expect(call.canSaveFile, isTrue);
+    expect(call.fileName, 'index.html');
+    expect(call.fileContent, '<!DOCTYPE html>\n<html></html>');
+  });
+
+  test('only a successful fs_write offers a download', () {
+    ToolCallRecord call({
+      String name = 'fs_write',
+      ToolCallStatus status = ToolCallStatus.success,
+      String arguments = '{"content":"x","path":"index.html"}',
+    }) => ToolCallRecord(
+      name: name,
+      arguments: arguments,
+      status: status,
+      finishedAt: status == ToolCallStatus.running ? null : DateTime.now(),
+    );
+
+    expect(call().canSaveFile, isTrue);
+    expect(call(status: ToolCallStatus.running).canSaveFile, isFalse);
+    expect(call(status: ToolCallStatus.failure).canSaveFile, isFalse);
+    expect(call(name: 'fs_append').canSaveFile, isFalse);
+    expect(call(arguments: '{"path":"index.html"}').canSaveFile, isFalse);
+    expect(
+      call(arguments: '{"content":"x","mode":"append","path":"index.html"}')
+          .canSaveFile,
+      isFalse,
+    );
+  });
+
+  test('the save dialog gets a sensible MIME type', () {
+    expect(ToolFileSaver.mimeTypeFor('index.html'), 'text/html');
+    expect(ToolFileSaver.mimeTypeFor('app.js'), 'text/javascript');
+    expect(ToolFileSaver.mimeTypeFor('style.css'), 'text/css');
+    expect(ToolFileSaver.mimeTypeFor('data.bin'), 'application/octet-stream');
+  });
+
   testWidgets('the bubble lists tools and expands their details', (
     tester,
   ) async {
@@ -287,8 +334,50 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Инструмент: fs_mkdir'), findsOneWidget);
-    expect(find.text('Аргументы'), findsOneWidget);
+    expect(find.text('Аргументы'), findsNothing);
     expect(find.text('Результат'), findsOneWidget);
     expect(find.textContaining('lmchat-test'), findsWidgets);
+    expect(find.textContaining('Скачать'), findsNothing);
+  });
+
+  testWidgets('a written file shows the result and a download action', (
+    tester,
+  ) async {
+    final message = ChatMessage(
+      id: 'a1',
+      role: 'assistant',
+      content: 'Файл создан.',
+      toolCalls: [
+        ToolCallRecord(
+          name: 'fs_write',
+          arguments:
+              '{"content":"<!DOCTYPE html>\\n<html></html>",'
+              '"mode":"overwrite","path":"site1/index.html"}',
+          output:
+              '[{"type":"text","text":"Created site1/index.html (298 B)."}]',
+          status: ToolCallStatus.success,
+          finishedAt: DateTime.now(),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: MessageBubble(message: message)),
+      ),
+    );
+
+    expect(find.text('Написание'), findsOneWidget);
+    expect(find.textContaining('path: site1/index.html'), findsOneWidget);
+
+    await tester.tap(find.text('Написание'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Инструмент: fs_write'), findsOneWidget);
+    expect(find.text('Аргументы'), findsNothing);
+    expect(find.textContaining('<!DOCTYPE'), findsNothing);
+    expect(find.text('Результат'), findsOneWidget);
+    expect(find.textContaining('Created site1/index.html'), findsOneWidget);
+    expect(find.text('Скачать index.html'), findsOneWidget);
   });
 }

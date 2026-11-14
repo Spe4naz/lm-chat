@@ -5,6 +5,7 @@ import '../format_utils.dart';
 import '../l10n_text.dart';
 import '../models.dart';
 import '../theme.dart';
+import '../tool_file_saver.dart';
 import 'markdown_view.dart';
 
 class MessageBubble extends StatelessWidget {
@@ -939,6 +940,38 @@ class _ToolCallTile extends StatefulWidget {
 class _ToolCallTileState extends State<_ToolCallTile> {
   bool _open = false;
 
+  Future<void> _saveFile() async {
+    final call = widget.call;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final saved = await ToolFileSaver.save(
+        fileName: call.fileName,
+        content: call.fileContent,
+      );
+      if (!mounted || !saved) return;
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              L10n.tf('Файл сохранён: {name}', {'name': call.fileName}),
+            ),
+          ),
+        );
+    } catch (error) {
+      if (!mounted) return;
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              L10n.tf('Не удалось сохранить файл: {error}', {'error': error}),
+            ),
+          ),
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1038,8 +1071,6 @@ class _ToolCallTileState extends State<_ToolCallTile> {
                       ),
                     ),
                   ),
-                if (call.arguments.trim().isNotEmpty)
-                  _ToolDetail(label: L10n.t('Аргументы'), text: call.arguments),
                 if (call.isFailure && call.error.isNotEmpty)
                   _ToolDetail(
                     label: L10n.t('Ошибка'),
@@ -1050,6 +1081,27 @@ class _ToolCallTileState extends State<_ToolCallTile> {
                   _ToolDetail(
                     label: L10n.t('Результат'),
                     text: call.readableOutput,
+                  ),
+                if (call.canSaveFile)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: TextButton.icon(
+                        onPressed: _saveFile,
+                        icon: const Icon(Icons.download_rounded, size: 17),
+                        label: Text(
+                          L10n.tf('Скачать {name}', {'name': call.fileName}),
+                        ),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          minimumSize: const Size(0, 30),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          textStyle: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ),
                   ),
                 if (call.isRunning)
                   Padding(
